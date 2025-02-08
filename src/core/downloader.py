@@ -46,9 +46,9 @@ class Downloader:
                 'add_metadata': True,
             }],
             'logger': logging.getLogger('yt-dlp'),
-            'quiet': True,  # Suppress console output
-            'no_warnings': True,  # Suppress warnings
-            'clean_infojson': True,  # Remove temporary files
+            'quiet': True,
+            'no_warnings': True,
+            'clean_infojson': True,
         }
 
     def download(self, url: str, output_path: str,
@@ -94,7 +94,6 @@ class Downloader:
     def _progress_hook(self, callback: Callable):
         def hook(d):
             if d['status'] == 'downloading':
-                # Calculate progress
                 total = d.get('total_bytes') or d.get(
                     'total_bytes_estimate', 0)
                 downloaded = d.get('downloaded_bytes', 0)
@@ -119,15 +118,3 @@ class Downloader:
                     {'status': 'error', 'text': f"Error: {d.get('error', 'Unknown error')}", 'progress': 0})
 
         return hook
-
-
-class CLIDownloader(Downloader):
-    def __init__(self):
-        super().__init__()
-        self.base_options['progress_hooks'] = [self._cli_progress]
-
-    def _cli_progress(self, d):
-        if d['status'] == 'downloading':
-            print(f"\rDownloading: {d.get('_percent_str', '0%')}", end='')
-        elif d['status'] == 'finished':
-            print("\nDownload complete!")

@@ -9,9 +9,7 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.application.current import get_app
 from ..core.downloader import Downloader
 import os
-import asyncio
 import threading
-import time
 
 
 class TerminalUI:
