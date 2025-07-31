@@ -6,12 +6,13 @@ A Python-based YouTube downloader with both GUI and CLI interfaces using yt-dlp.
 - Download single videos or playlists
 - Choose between video or audio-only downloads
 - Progress tracking with real-time updates
-- Modern window-based GUI (default)
+- **Modern CustomTkinter GUI** (default) with automatic dark/light mode
 - Terminal-based UI option
+- Legacy window GUI option
 - CLI support for automation
 - Threaded downloads (non-blocking UI)
 - Detailed status logging
-- **Dark/Light mode toggle** with persistent settings
+- **Automatic theme detection** with manual toggle
 - **Configuration system** for user preferences
 - **Window size persistence** across sessions
 
@@ -25,13 +26,13 @@ A Python-based YouTube downloader with both GUI and CLI interfaces using yt-dlp.
 2. Install requirements: `pip install -r requirements.txt`
 
 ## Usage
-- Window GUI mode (default): `python main.py`
+- Modern GUI mode (default): `python main.py`
 - Terminal UI mode: `python main.py --terminal`
 - Direct download mode: `python main.py --url <YouTube URL>`
 
 ## Configuration
 The application automatically creates a `config/settings.json` file to store user preferences:
-- **Theme**: Dark/light mode preference (defaults to dark)
+- **Theme**: Auto/dark/light mode preference (defaults to auto - follows system theme)
 - **Window size**: Application window dimensions
 - **Output directory**: Default download location
 - **Default format**: Preferred download format (audio/video)

@@ -8,14 +8,16 @@ class Config:
         self.config_dir = Path("config")
         self.config_file = self.config_dir / "settings.json"
         self.default_settings = {
-            "theme": "dark",
-            "window_size": "600x500",
-            "output_directory": ".",
+            "theme": "auto",
+            "window_size": "700x600",
+            "output_directory": self._get_default_output_directory(),
             "default_format": "audio",
             "auto_clear_logs": False,
             "download_history": True
         }
         self.settings = self.load_settings()
+        # Ensure default output directory exists
+        self._ensure_default_output_directory()
 
     def load_settings(self):
         """Load settings from config file or create with defaults"""
@@ -98,3 +100,29 @@ class Config:
                 "warning_fg": "#ff9800",
                 "info_fg": "#2196F3"
             }
+
+    def _get_default_output_directory(self):
+        """Get the default output directory path"""
+        # Create an 'output' folder in the project root directory
+        project_root = Path(__file__).resolve().parent.parent.parent
+        default_dir = project_root / "output"
+        return str(default_dir)
+
+    def _ensure_default_output_directory(self):
+        """Ensure the default output directory exists"""
+        try:
+            default_dir = Path(self._get_default_output_directory())
+            default_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            print(f"Warning: Could not create default output directory: {e}")
+
+    def get_default_output_directory(self):
+        """Get the default output directory path"""
+        return self._get_default_output_directory()
+
+    def reset_output_directory(self):
+        """Reset output directory to default and ensure it exists"""
+        default_dir = self._get_default_output_directory()
+        self.set("output_directory", default_dir)
+        self._ensure_default_output_directory()
+        return default_dir

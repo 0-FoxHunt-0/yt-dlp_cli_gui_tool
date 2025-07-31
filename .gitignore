@@ -4,6 +4,9 @@ config/
 # Logs
 logs/
 
+# Output directory
+output/
+
 # Python
 __pycache__/
 *.py[cod]

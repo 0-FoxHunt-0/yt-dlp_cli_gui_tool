@@ -8,6 +8,7 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.styles import Style
 from prompt_toolkit.application.current import get_app
 from ..core.downloader import Downloader
+from ..utils.config import Config
 import os
 import threading
 
@@ -15,7 +16,9 @@ import threading
 class TerminalUI:
     def __init__(self):
         self.downloader = Downloader()
+        self.config = Config()
         self.focusable_elements = []
+        self.download_thread = None
 
         # Create header
         self.header = Label(HTML(
@@ -39,16 +42,24 @@ class TerminalUI:
         ])
         self.focusable_elements.append(self.format_select)
 
-        # Add playlist toggle with icon
-        self.playlist_toggle = Checkbox(
-            text="📑 Treat as playlist"
-        )
-        self.focusable_elements.append(self.playlist_toggle)
+        # Metadata options
+        self.metadata_checkboxes = {}
+        metadata_options = [
+            ('embed_metadata', '📝 Embed Metadata', True),
+            ('embed_thumbnail', '🖼️ Embed Thumbnail', True),
+            ('write_thumbnail', '💾 Save Thumbnail', True),
+            ('include_author', '👤 Include Author', False),
+        ]
+        
+        for key, text, default in metadata_options:
+            checkbox = Checkbox(text=text, checked=default)
+            self.metadata_checkboxes[key] = checkbox
+            self.focusable_elements.append(checkbox)
 
         # Output path with icon
         self.output_path = TextArea(
             height=1,
-            text=os.getcwd(),
+            text=self.config.get("output_directory", self.config.get_default_output_directory()),
             focusable=True,
             multiline=False,
             style='class:input-field'
@@ -90,18 +101,25 @@ class TerminalUI:
             Box(
                 body=HSplit([
                     Label(HTML('<style fg="ansiyellow">Download Options:</style>')),
+                    Box(
+                        body=self.format_select,
+                        padding=1,
+                        style='class:options-box'
+                    ),
+                ]),
+                padding=1,
+                style='class:options-section'
+            ),
+            Window(height=1),  # Spacing
+
+            # Metadata section
+            Box(
+                body=HSplit([
+                    Label(HTML('<style fg="ansiyellow">Metadata Options:</style>')),
                     VSplit([
-                        Box(
-                            body=self.format_select,
-                            padding=1,
-                            style='class:options-box'
-                        ),
-                        Window(width=2),  # Horizontal spacing
-                        Box(
-                            body=self.playlist_toggle,
-                            padding=1,
-                            style='class:options-box'
-                        ),
+                        HSplit([checkbox for checkbox in list(self.metadata_checkboxes.values())[:2]]),
+                        Window(width=2),
+                        HSplit([checkbox for checkbox in list(self.metadata_checkboxes.values())[2:]]),
                     ]),
                 ]),
                 padding=1,
@@ -152,8 +170,14 @@ class TerminalUI:
 
         @kb.add('c-c')
         def _(event):
-            "Quit application on Ctrl+C"
-            event.app.exit()
+            "Quit application on Ctrl+C or abort download"
+            if self.download_thread and self.download_thread.is_alive():
+                # Abort download
+                self.downloader.abort_download()
+                self.status_text.text = "🛑 Aborting and cleaning up incomplete files..."
+                get_app().invalidate()
+            else:
+                event.app.exit()
 
         @kb.add('tab')
         def _(event):
@@ -202,6 +226,27 @@ class TerminalUI:
 
         self.download_completed = False
         self.download_success = False
+
+    def is_playlist_url(self, url):
+        """Detect if the URL is a playlist based on YouTube URL parameters"""
+        import re
+        
+        # YouTube playlist patterns
+        playlist_patterns = [
+            r'[?&]list=([^&]+)',  # Standard playlist parameter
+            r'playlist\?list=([^&]+)',  # Playlist URL format
+            r'watch\?v=[^&]+&list=([^&]+)',  # Video with playlist
+        ]
+        
+        for pattern in playlist_patterns:
+            if re.search(pattern, url):
+                return True
+        
+        # Check for playlist-specific domains
+        if 'youtube.com/playlist' in url or 'youtube.com/watch?list=' in url:
+            return True
+            
+        return False
 
     def update_progress(self, d):
         """Update the progress text and status text"""
@@ -281,18 +326,51 @@ class TerminalUI:
 
         def download_thread():
             try:
+                # Auto-detect if this is a playlist
+                is_playlist = self.is_playlist_url(url)
+                
+                # Update status with detection result
+                if is_playlist:
+                    self.status_text.text = "📑 Detected playlist - downloading all videos..."
+                else:
+                    self.status_text.text = "🎬 Detected single video - downloading..."
+                get_app().invalidate()
+                
+                # Collect metadata options
+                metadata_options = {
+                    key: checkbox.checked for key, checkbox in self.metadata_checkboxes.items()
+                }
+                
+                # Save output directory to config
+                self.config.set("output_directory", self.output_path.text)
+                
                 self.downloader.download(
                     url=url,
                     output_path=self.output_path.text,
                     is_audio=self.format_select.current_value == 'audio',
-                    is_playlist=self.playlist_toggle.checked,
+                    is_playlist=is_playlist,
+                    metadata_options=metadata_options,
                     progress_callback=self.update_progress
                 )
-                self.status_text.text = "✅ Download completed!"
+                # Check for error summary
+                error_summary = self.downloader.get_error_summary()
+                if error_summary:
+                    self.status_text.text = f"⚠️ Download completed with issues: {error_summary}"
+                else:
+                    self.status_text.text = "✅ Download completed!"
                 self.download_completed = True
                 self.download_success = True
             except Exception as e:
-                self.status_text.text = f"❌ Download error: {str(e)}"
+                error_msg = str(e)
+                if "aborted" in error_msg.lower():
+                    self.status_text.text = "⏹️ Download aborted - incomplete files cleaned up"
+                else:
+                    # Check for error summary
+                    error_summary = self.downloader.get_error_summary()
+                    if error_summary:
+                        self.status_text.text = f"⚠️ Download completed with errors: {error_summary}"
+                    else:
+                        self.status_text.text = f"❌ Download error: {error_msg}"
                 self.download_completed = True
                 self.download_success = False
             finally:
@@ -301,9 +379,9 @@ class TerminalUI:
                 threading.Timer(5.0, lambda: get_app().exit()).start()
 
         # Start download in separate thread
-        thread = threading.Thread(target=download_thread)
-        thread.daemon = True
-        thread.start()
+        self.download_thread = threading.Thread(target=download_thread)
+        self.download_thread.daemon = True
+        self.download_thread.start()
 
     def run(self):
         self.application.run()

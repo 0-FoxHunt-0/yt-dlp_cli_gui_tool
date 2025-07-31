@@ -2,9 +2,10 @@ import argparse
 import tkinter as tk
 from tkinter import ttk, filedialog
 import sys
+import signal
 from src.core.downloader import Downloader
 from src.gui.terminal_ui import TerminalUI
-from src.gui.window_ui import WindowUI
+from src.gui.modern_ui import ModernUI
 
 
 class YouTubeDownloaderApp:
@@ -111,7 +112,20 @@ class YouTubeDownloaderApp:
             self.progress_bar['value'] = 0
 
 
+def setup_global_signal_handlers():
+    """Set up global signal handlers"""
+    def signal_handler(signum, frame):
+        print("\n👋 Exiting gracefully...")
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    if hasattr(signal, 'SIGTERM'):
+        signal.signal(signal.SIGTERM, signal_handler)
+
 def main():
+    # Set up global signal handlers first
+    setup_global_signal_handlers()
+    
     parser = argparse.ArgumentParser(description='YouTube Downloader')
     parser.add_argument(
         '--url', help='YouTube URL to download directly (skips UI)')
@@ -119,7 +133,8 @@ def main():
                         help='Download audio only')
     parser.add_argument('--output', default='.', help='Output directory')
     parser.add_argument('--terminal', action='store_true',
-                        help='Use terminal UI instead of window GUI')
+                        help='Use terminal UI instead of modern GUI')
+
     args = parser.parse_args()
 
     if args.url:
@@ -127,16 +142,28 @@ def main():
         downloader = Downloader()
         try:
             downloader.download(args.url, args.output, args.audio_only)
+        except KeyboardInterrupt:
+            print("\n🛑 Download interrupted. Cleaning up incomplete files...")
+            downloader.abort_download()
+            print("✅ Cleanup completed. Exiting...")
         except Exception as e:
             print(f"Error: {e}")
     elif args.terminal:
         # Terminal UI mode
-        ui = TerminalUI()
-        ui.run()
+        try:
+            ui = TerminalUI()
+            ui.run()
+        except KeyboardInterrupt:
+            print("\n👋 Exiting gracefully...")
     else:
-        # Default: Window GUI mode
-        ui = WindowUI()
-        ui.run()
+        # Default: Modern GUI mode
+        try:
+            ui = ModernUI()
+            ui.run()
+        except KeyboardInterrupt:
+            print("\n👋 Exiting gracefully...")
+        except Exception as e:
+            print(f"Error: {e}")
 
 
 if __name__ == '__main__':
