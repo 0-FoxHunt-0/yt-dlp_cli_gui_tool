@@ -4,6 +4,7 @@ from tkinter import ttk, filedialog
 import sys
 from src.core.downloader import Downloader
 from src.gui.terminal_ui import TerminalUI
+from src.gui.window_ui import WindowUI
 
 
 class YouTubeDownloaderApp:
@@ -117,6 +118,8 @@ def main():
     parser.add_argument('--audio-only', action='store_true',
                         help='Download audio only')
     parser.add_argument('--output', default='.', help='Output directory')
+    parser.add_argument('--terminal', action='store_true',
+                        help='Use terminal UI instead of window GUI')
     args = parser.parse_args()
 
     if args.url:
@@ -126,9 +129,13 @@ def main():
             downloader.download(args.url, args.output, args.audio_only)
         except Exception as e:
             print(f"Error: {e}")
-    else:
-        # Interactive terminal UI mode
+    elif args.terminal:
+        # Terminal UI mode
         ui = TerminalUI()
+        ui.run()
+    else:
+        # Default: Window GUI mode
+        ui = WindowUI()
         ui.run()
 
 
