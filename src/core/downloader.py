@@ -191,6 +191,13 @@ Verify installation: ffmpeg -version
                 options['postprocessors'].append({
                     'key': 'FFmpegMetadata',
                 })
+            
+            # Add audio normalization postprocessor for video
+            if self.ffmpeg_available:
+                options['postprocessors'].append({
+                    'key': 'FFmpegVideoConvertor',
+                    'preferedformat': 'mp4',
+                })
         else:
             # For audio, use the EXACT same approach as your working command
             # Remove conflicting options first
@@ -257,12 +264,14 @@ Verify installation: ffmpeg -version
                     '-write_id3v1', '1',
                 ]
             else:
-                # Video-specific FFmpeg args for better audio-video sync
+                # Video-specific FFmpeg args for better audio-video sync and volume
                 options['postprocessor_args']['ffmpeg'] = [
                     '-hide_banner',
                     '-loglevel', 'error',
                     '-c:v', 'copy',  # Copy video stream to avoid re-encoding
-                    '-c:a', 'copy',  # Copy audio stream to avoid re-encoding
+                    '-c:a', 'aac',   # Re-encode audio to AAC for volume normalization
+                    '-b:a', '192k',  # Good quality audio bitrate
+                    '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11',  # Normalize audio loudness
                     '-avoid_negative_ts', 'make_zero',  # Fix timestamp issues
                     '-fflags', '+genpts',  # Generate presentation timestamps
                 ]
@@ -440,10 +449,17 @@ Verify installation: ffmpeg -version
                 "*.f*",             # format-specific partial files (f140, f137, etc.)
                 "*.temp",           # temporary files
                 "*.tmp",            # temporary files
+                "*.temp.mp3",       # temporary MP3 files
+                "*.temp.mp4",       # temporary MP4 files
+                "*.temp.webm",      # temporary WebM files
+                "*.temp.mkv",       # temporary MKV files
                 "*.ytdl",           # yt-dlp specific temp files
                 "*.webm.part",      # WebM partial files
                 "*.mp4.part",       # MP4 partial files
+                "*.mkv.part",       # MKV partial files
                 "*.m4a.part",       # M4A partial files
+                "*.incomplete",     # incomplete files
+                "*.downloading",    # downloading files
             ]
             
             # Also clean up thumbnail files when aborting or after successful embedding
