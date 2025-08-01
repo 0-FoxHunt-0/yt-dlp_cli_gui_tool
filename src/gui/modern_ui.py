@@ -34,7 +34,7 @@ class ModernUI:
         self.root = ctk.CTk()
         self.root.title("YouTube Downloader")
         self.root.geometry("800x750")
-        self.root.minsize(700, 600)
+        self.root.minsize(400, 450)
         
         # Set window icon (if available)
         try:
@@ -96,8 +96,7 @@ class ModernUI:
         # Create scrollable frame
         self.scrollable_frame = ctk.CTkScrollableFrame(
             self.main_container,
-            width=760,  # Slightly smaller than window width
-            height=650,  # Fixed height for scrollable area
+            width=450,  # Responsive width for small screens
             fg_color="transparent"
         )
         self.scrollable_frame.pack(fill="both", expand=True, padx=10, pady=10)
@@ -503,7 +502,7 @@ class ModernUI:
             self.progress_text.configure(text="⏹️ Aborting download...")
             self.log_status("🧹 Cleaning up incomplete files...")
             
-            # Hide playlist counter
+            # Hide playlist/status counter
             self.hide_playlist_counter()
             
             # Hide abort button and show download button
@@ -534,10 +533,19 @@ class ModernUI:
     def update_progress(self, d):
         """Update progress bar and status"""
         try:
-            # Update playlist counter if this is a playlist download
-            playlist_progress = self.downloader.get_playlist_progress()
-            if playlist_progress:
-                self.update_playlist_counter(playlist_progress)
+            # Update progress counter for both playlists and single videos
+            progress_info = self.downloader.get_playlist_progress()
+            if progress_info:
+                if self.downloader._is_playlist_download:
+                    self.update_playlist_counter(progress_info)
+                else:
+                    # For single videos, show skipped status if applicable
+                    if progress_info['skipped'] > 0:
+                        self.show_single_video_status("⏭️ Already downloaded (skipped)")
+                    elif progress_info['failed'] > 0:
+                        self.show_single_video_status("❌ Download failed")
+                    elif progress_info['downloaded'] > 0:
+                        self.show_single_video_status("✅ Downloaded successfully")
             
             if d['status'] == 'downloading':
                 # Extract progress percentage
@@ -619,6 +627,11 @@ class ModernUI:
     def hide_playlist_counter(self):
         """Hide playlist counter"""
         self.playlist_counter.pack_forget()
+    
+    def show_single_video_status(self, status_text):
+        """Show status for single video downloads"""
+        self.playlist_counter.configure(text=status_text)
+        self.playlist_counter.pack(anchor="w", padx=15, pady=(0, 5))
 
     def update_playlist_counter(self, progress_info):
         """Update playlist counter with current progress"""
@@ -737,7 +750,7 @@ class ModernUI:
 
     def download_completed(self, success, message):
         """Handle download completion"""
-        # Hide playlist counter
+        # Hide playlist/status counter
         self.hide_playlist_counter()
         
         # Check for error summary

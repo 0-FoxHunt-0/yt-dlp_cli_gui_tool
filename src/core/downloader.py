@@ -320,21 +320,24 @@ Verify installation: ffmpeg -version
         import re
         sanitized_template = re.sub(r'[<>:"/\\|?*]', '_', template)
         options['outtmpl'] = os.path.join(output_path, sanitized_template)
+        
+        # Ensure archive.txt is always in the main output directory for consistency
         options['download_archive'] = os.path.join(output_path, 'archive.txt')
+        # Ensure the archive behavior is enabled
+        options['break_on_existing'] = False  # Continue checking the rest of playlist even if some videos exist
 
         # Capture initial archive count for accurate skipped video detection
-        if is_playlist:
-            archive_file = os.path.join(output_path, 'archive.txt')
-            if os.path.exists(archive_file):
-                try:
-                    with open(archive_file, 'r', encoding='utf-8') as f:
-                        self._initial_archive_count = len(f.readlines())
-                    logging.info(f"Initial archive count: {self._initial_archive_count} videos")
-                except Exception as e:
-                    logging.warning(f"Could not read initial archive: {e}")
-                    self._initial_archive_count = 0
-            else:
+        archive_file = os.path.join(output_path, 'archive.txt')
+        if os.path.exists(archive_file):
+            try:
+                with open(archive_file, 'r', encoding='utf-8') as f:
+                    self._initial_archive_count = len(f.readlines())
+                logging.info(f"Initial archive count: {self._initial_archive_count} videos")
+            except Exception as e:
+                logging.warning(f"Could not read initial archive: {e}")
                 self._initial_archive_count = 0
+        else:
+            self._initial_archive_count = 0
 
         # Add playlist-specific options with aggressive resource usage
         if is_playlist:
@@ -385,8 +388,7 @@ Verify installation: ffmpeg -version
                     logging.warning(f"Post-download cleanup failed: {cleanup_error}")
                 
                 # Final detection of skipped videos for accurate counting
-                if self._is_playlist_download:
-                    self._detect_skipped_videos()
+                self._detect_skipped_videos()
                 
                 # Generate report if there were issues
                 self._generate_error_report()
@@ -404,8 +406,7 @@ Verify installation: ffmpeg -version
                 logging.warning(f"Cleanup after abort failed: {cleanup_error}")
             
             # Final detection of skipped videos for accurate counting
-            if self._is_playlist_download:
-                self._detect_skipped_videos()
+            self._detect_skipped_videos()
             
             self._generate_error_report()
             raise Exception("Download aborted by user")
@@ -423,8 +424,7 @@ Verify installation: ffmpeg -version
                 logging.warning(f"Cleanup after error failed: {cleanup_error}")
             
             # Final detection of skipped videos for accurate counting
-            if self._is_playlist_download:
-                self._detect_skipped_videos()
+            self._detect_skipped_videos()
             
             # Generate report even on failure
             self._generate_error_report()
@@ -468,22 +468,33 @@ Verify installation: ffmpeg -version
             return 0, "Unknown Playlist"
 
     def get_playlist_progress(self):
-        """Get current playlist progress information"""
-        if not self._is_playlist_download:
-            return None
+        """Get current download progress information (works for both playlists and single videos)"""
+        if self._is_playlist_download:
+            # Calculate completed videos (downloaded + failed + skipped)
+            completed = self._playlist_downloaded_videos + self._playlist_failed_videos + self._playlist_skipped_videos
+            remaining = max(0, self._playlist_total_videos - completed)
             
-        # Calculate completed videos (downloaded + failed + skipped)
-        completed = self._playlist_downloaded_videos + self._playlist_failed_videos + self._playlist_skipped_videos
-        remaining = max(0, self._playlist_total_videos - completed)
-        
-        return {
-            'total': self._playlist_total_videos,
-            'downloaded': self._playlist_downloaded_videos,
-            'failed': self._playlist_failed_videos,
-            'skipped': self._playlist_skipped_videos,
-            'completed': completed,
-            'remaining': remaining
-        }
+            return {
+                'total': self._playlist_total_videos,
+                'downloaded': self._playlist_downloaded_videos,
+                'failed': self._playlist_failed_videos,
+                'skipped': self._playlist_skipped_videos,
+                'completed': completed,
+                'remaining': remaining
+            }
+        else:
+            # For single videos, return simple progress
+            total = 1
+            completed = min(1, self._playlist_downloaded_videos + self._playlist_failed_videos + self._playlist_skipped_videos)
+            
+            return {
+                'total': total,
+                'downloaded': self._playlist_downloaded_videos,
+                'failed': self._playlist_failed_videos,
+                'skipped': self._playlist_skipped_videos,
+                'completed': completed,
+                'remaining': max(0, total - completed)
+            }
 
     def _reset_playlist_tracking(self):
         """Reset playlist tracking variables"""
@@ -496,7 +507,7 @@ Verify installation: ffmpeg -version
 
     def _detect_skipped_videos(self):
         """Detect videos that were skipped (already downloaded) by checking archive file"""
-        if not self._output_directory or not self._is_playlist_download:
+        if not self._output_directory:
             return
             
         try:
@@ -512,17 +523,23 @@ Verify installation: ffmpeg -version
                 # Calculate newly added videos (total in archive - initial count)
                 newly_added = total_in_archive - self._initial_archive_count
                 
-                # Calculate skipped videos (already in archive before this session)
-                # This is the difference between what we've tracked as downloaded vs what was actually added
-                if newly_added > self._playlist_downloaded_videos:
-                    # More videos were added to archive than we tracked as downloaded
-                    # This means some were already downloaded (skipped)
-                    self._playlist_skipped_videos = newly_added - self._playlist_downloaded_videos
-                    logging.info(f"Detected {self._playlist_skipped_videos} already downloaded videos (skipped)")
-                elif newly_added < self._playlist_downloaded_videos:
-                    # We tracked more downloads than were added to archive
-                    # This could happen if some downloads failed to update archive
-                    logging.warning(f"Archive count mismatch: tracked {self._playlist_downloaded_videos} downloads but only {newly_added} added to archive")
+                # Calculate skipped videos based on archive analysis
+                if self._is_playlist_download:
+                    # For playlists: calculate skipped as total existing minus what we actually processed
+                    total_processed = self._playlist_downloaded_videos + self._playlist_failed_videos
+                    if newly_added > total_processed:
+                        # Some videos were already in archive (skipped)
+                        additional_skipped = newly_added - total_processed
+                        self._playlist_skipped_videos = max(0, additional_skipped)
+                        logging.info(f"Detected {self._playlist_skipped_videos} already downloaded videos (skipped)")
+                    elif newly_added < self._playlist_downloaded_videos:
+                        # Archive count mismatch - log warning
+                        logging.warning(f"Archive count mismatch: tracked {self._playlist_downloaded_videos} downloads but only {newly_added} added to archive")
+                else:
+                    # For single videos: if archive didn't grow, it was likely skipped
+                    if newly_added == 0 and self._playlist_downloaded_videos == 0:
+                        self._playlist_skipped_videos = 1  # Single video was skipped
+                        logging.info("Single video was already downloaded (skipped)")
                     
         except Exception as e:
             logging.warning(f"Error detecting skipped videos: {e}")
@@ -547,23 +564,34 @@ Verify installation: ffmpeg -version
                     logging.info(f"Playlist progress: {self._playlist_downloaded_videos}/{self._playlist_total_videos} videos downloaded")
                     
             elif d['status'] == 'error':
-                # Track failed videos
-                error_info = {
-                    'title': d.get('info_dict', {}).get('title', 'Unknown'),
-                    'url': d.get('info_dict', {}).get('webpage_url', 'Unknown'),
-                    'error': d.get('error', 'Unknown error')
-                }
-                self.failed_videos.append(error_info)
-                
-                # Update playlist tracking for failed videos
-                if self._is_playlist_download:
-                    self._playlist_failed_videos += 1
-                    logging.warning(f"Playlist video failed: {error_info['title']}")
-                
-                logging.warning(f"Video failed: {error_info}")
+                # Check if this is actually a "skip" due to archive, not a real error
+                error_msg = str(d.get('error', '')).lower()
+                if any(skip_phrase in error_msg for skip_phrase in ['already been recorded', 'already recorded', 'has already been downloaded']):
+                    # This is a skip, not an error
+                    if self._is_playlist_download:
+                        self._playlist_skipped_videos += 1
+                        logging.info(f"Video already in archive (skipped): {d.get('info_dict', {}).get('title', 'Unknown')}")
+                    else:
+                        self._playlist_skipped_videos = 1
+                        logging.info("Single video already in archive (skipped)")
+                else:
+                    # Track actual failed videos
+                    error_info = {
+                        'title': d.get('info_dict', {}).get('title', 'Unknown'),
+                        'url': d.get('info_dict', {}).get('webpage_url', 'Unknown'),
+                        'error': d.get('error', 'Unknown error')
+                    }
+                    self.failed_videos.append(error_info)
+                    
+                    # Update playlist tracking for failed videos
+                    if self._is_playlist_download:
+                        self._playlist_failed_videos += 1
+                        logging.warning(f"Playlist video failed: {error_info['title']}")
+                    
+                    logging.warning(f"Video failed: {error_info}")
             
-            # Detect skipped videos periodically
-            if self._is_playlist_download and d.get('status') in ['downloading', 'finished']:
+            # Detect skipped videos periodically for both single videos and playlists
+            if d.get('status') in ['downloading', 'finished']:
                 self._detect_skipped_videos()
             
             # Pass the original yt-dlp data to the callback
