@@ -24,6 +24,14 @@ class Downloader:
         self._active_download_files = set()
         self._output_directory = None
 
+        # Playlist tracking
+        self._playlist_total_videos = 0
+        self._playlist_downloaded_videos = 0
+        self._playlist_failed_videos = 0
+        self._playlist_skipped_videos = 0
+        self._is_playlist_download = False
+        self._initial_archive_count = 0  # Track initial archive count for accurate skipped detection
+
         # Configure logging
         log_file = os.path.join(
             self.logs_dir, f'yt-dlp_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
@@ -42,7 +50,8 @@ class Downloader:
             'nopostoverwrites': True,
             'writethumbnail': True,  # Always download thumbnails
             'convertthumbnails': 'jpg',  # Always convert to jpg
-            'retries': 5,
+            'retries': 3,  # Reduced retries for faster failure recovery
+            'fragment_retries': 5,  # Retries for individual fragments
             'progress_hooks': [],
             'outtmpl': '%(title)s.%(ext)s',
             'logger': logging.getLogger('yt-dlp'),
@@ -51,6 +60,12 @@ class Downloader:
             'clean_infojson': True,
             'ignoreerrors': True,  # Skip unavailable videos
             'continue_dl': True,   # Continue after errors
+            'concurrent_fragments': 8,  # More parallel fragments for speed
+            'http_chunk_size': 20971520,  # 20MB chunks for even better speed
+            'buffer_size': 65536,  # Larger buffer size for faster I/O
+            'no_check_certificate': False,  # Keep security but optimize
+            'geo_bypass': True,  # Bypass geo-restrictions faster
+            'prefer_free_formats': False,  # Don't prefer free formats if quality is better elsewhere
         }
         
         # Track skipped/failed videos for reporting
@@ -62,9 +77,10 @@ class Downloader:
             self.base_options['postprocessors'] = [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
-                'preferredquality': '0',
+                'preferredquality': '0',  # Keep max quality, optimize speed with CPU usage
             }, {
                 'key': 'EmbedThumbnail',
+                'already_have_thumbnail': False,
             }, {
                 'key': 'FFmpegMetadata',
                 'add_metadata': True,
@@ -141,6 +157,15 @@ Verify installation: ffmpeg -version
                 'embed_subs': False
             }
 
+        # Initialize playlist tracking
+        self._reset_playlist_tracking()
+        if is_playlist:
+            self._is_playlist_download = True
+            # Extract playlist information to get total count
+            total_videos, playlist_title = self._extract_playlist_info(url)
+            self._playlist_total_videos = total_videos
+            logging.info(f"Playlist detected: {playlist_title} with {total_videos} videos")
+
         # Handle playlist folder creation
         if is_playlist:
             try:
@@ -199,34 +224,29 @@ Verify installation: ffmpeg -version
                     'preferedformat': 'mp4',
                 })
         else:
-            # For audio, use the EXACT same approach as your working command
+            # For audio, use optimized approach for faster post-processing
             # Remove conflicting options first
             options.pop('extractaudio', None)
             options.pop('audioformat', None)
             options.pop('audioquality', None)
             
             # Set the exact options from your working command
-            options['format'] = 'bestaudio/best'
+            options['format'] = 'bestaudio/best'  # Prefer formats that need less conversion
             options['postprocessors'] = [
                 {
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
-                    'preferredquality': '0',
+                    'preferredquality': '0',  # Keep max quality, optimize with system resources
                 }
             ]
             
             # Add embedding exactly like your command does it
             if metadata_options.get('embed_thumbnail', True) and self.ffmpeg_available:
-                options['postprocessors'].extend([
-                    {
-                        'key': 'FFmpegThumbnailsConvertor',
-                        'format': 'jpg',
-                    },
-                    {
-                        'key': 'EmbedThumbnail',
-                        'already_have_thumbnail': True,  # Keep thumbnail files for Windows compatibility
-                    }
-                ])
+                # Skip separate thumbnail conversion step - embed directly
+                options['postprocessors'].append({
+                    'key': 'EmbedThumbnail',
+                    'already_have_thumbnail': False,
+                })
             
             if metadata_options.get('embed_metadata', True) and self.ffmpeg_available:
                 options['postprocessors'].append({
@@ -245,6 +265,11 @@ Verify installation: ffmpeg -version
         else:
             options['embedchapters'] = False
         
+        # Optimize post-processing for maximum speed
+        options['prefer_ffmpeg'] = True  # Always prefer FFmpeg for better performance
+        options['keep_fragments'] = False  # Delete fragments after merging to save disk space
+        options['embed_metadata'] = metadata_options.get('embed_metadata', True)
+        
         # Windows-specific FFmpeg path fixes
         import platform
         if platform.system() == 'Windows':
@@ -253,27 +278,36 @@ Verify installation: ffmpeg -version
             # Ensure proper path handling for Windows
             if 'postprocessor_args' not in options:
                 options['postprocessor_args'] = {}
-            # Add FFmpeg args for better Windows compatibility
+            # Add FFmpeg args optimized for maximum resource usage
             if is_audio:
-                # Audio-specific FFmpeg args for better MP3 thumbnail compatibility
+                # Audio-specific FFmpeg args optimized for speed with maximum resource usage
                 options['postprocessor_args']['ffmpeg'] = [
                     '-hide_banner', 
                     '-loglevel', 'error',
+                    '-threads', '0',  # Use all available CPU cores
+                    '-thread_type', 'frame+slice',  # Use both frame and slice threading
+                    '-cpu-used', '0',  # Use all CPU cycles for encoding (slowest but highest quality)
                     '-map_metadata', '0',
                     '-id3v2_version', '3',
                     '-write_id3v1', '1',
+                    '-movflags', '+faststart',  # Optimize for fast streaming
+                    '-bufsize', '2M',  # Larger buffer for smoother processing
+                    '-readrate_initial_burst', '2.0',  # Allow faster initial processing
                 ]
             else:
-                # Video-specific FFmpeg args for better audio-video sync and volume
+                # Video-specific FFmpeg args optimized for speed with maximum resource usage
                 options['postprocessor_args']['ffmpeg'] = [
                     '-hide_banner',
                     '-loglevel', 'error',
+                    '-threads', '0',  # Use all available CPU cores
+                    '-thread_type', 'frame+slice',  # Use both frame and slice threading
                     '-c:v', 'copy',  # Copy video stream to avoid re-encoding
-                    '-c:a', 'aac',   # Re-encode audio to AAC for volume normalization
-                    '-b:a', '192k',  # Good quality audio bitrate
-                    '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11',  # Normalize audio loudness
+                    '-c:a', 'copy',  # Copy audio too if possible (much faster)
+                    '-movflags', '+faststart',  # Optimize for fast streaming
                     '-avoid_negative_ts', 'make_zero',  # Fix timestamp issues
-                    '-fflags', '+genpts',  # Generate presentation timestamps
+                    '-bufsize', '4M',  # Larger buffer for video processing
+                    '-maxrate', '50M',  # Allow higher bitrates for faster processing
+                    '-readrate_initial_burst', '3.0',  # Even faster initial processing for video
                 ]
 
         # Set paths with improved template and sanitization
@@ -288,19 +322,39 @@ Verify installation: ffmpeg -version
         options['outtmpl'] = os.path.join(output_path, sanitized_template)
         options['download_archive'] = os.path.join(output_path, 'archive.txt')
 
-        # Add playlist-specific options with caching enabled
+        # Capture initial archive count for accurate skipped video detection
+        if is_playlist:
+            archive_file = os.path.join(output_path, 'archive.txt')
+            if os.path.exists(archive_file):
+                try:
+                    with open(archive_file, 'r', encoding='utf-8') as f:
+                        self._initial_archive_count = len(f.readlines())
+                    logging.info(f"Initial archive count: {self._initial_archive_count} videos")
+                except Exception as e:
+                    logging.warning(f"Could not read initial archive: {e}")
+                    self._initial_archive_count = 0
+            else:
+                self._initial_archive_count = 0
+
+        # Add playlist-specific options with aggressive resource usage
         if is_playlist:
             # Use the same template as single videos (no track numbers)
             sanitized_playlist_template = re.sub(r'[<>:"/\\|?*]', '_', template)
             options.update({
                 'yes_playlist': True,
-                'sleep_interval': 3,  # Reduced for better performance
+                'sleep_interval': 0.1,  # Minimal sleep between downloads
+                'max_sleep_interval': 1,  # Very low cap on sleep
                 'outtmpl': os.path.join(output_path, sanitized_playlist_template),
                 'restrictfilenames': True,  # Enable safe filenames
+                'concurrent_fragments': 16,  # More aggressive parallel fragments
+                'max_downloads': None,  # No download limit
+                'socket_timeout': 30,  # Faster timeout for unresponsive connections
             })
         else:
             options['noplaylist'] = True
             options['restrictfilenames'] = True  # Enable safe filenames
+            options['concurrent_fragments'] = 16  # More aggressive parallel fragments
+            options['socket_timeout'] = 30  # Faster timeout
 
         if progress_callback:
             options['progress_hooks'] = [
@@ -320,6 +374,20 @@ Verify installation: ffmpeg -version
                 self._should_abort = False
                 result = ydl.download([url])
                 
+                # Clean up thumbnail files after successful download (with small delay for postprocessors)
+                try:
+                    import time
+                    time.sleep(2)  # Give postprocessors time to finish
+                    cleanup_result = self._cleanup_incomplete_files(cleanup_type="post_processing")
+                    if cleanup_result["cleaned_count"] > 0:
+                        logging.info(f"Post-download cleanup completed: {cleanup_result['cleaned_count']} files removed")
+                except Exception as cleanup_error:
+                    logging.warning(f"Post-download cleanup failed: {cleanup_error}")
+                
+                # Final detection of skipped videos for accurate counting
+                if self._is_playlist_download:
+                    self._detect_skipped_videos()
+                
                 # Generate report if there were issues
                 self._generate_error_report()
                 return result
@@ -329,11 +397,15 @@ Verify installation: ffmpeg -version
             logging.info("Download aborted by user")
             # Cleanup and generate report
             try:
-                cleanup_result = self._cleanup_incomplete_files()
+                cleanup_result = self._cleanup_incomplete_files(cleanup_type="abort")
                 if cleanup_result["cleaned_count"] > 0:
                     logging.info(f"Abort cleanup completed: {cleanup_result['cleaned_count']} files removed")
             except Exception as cleanup_error:
                 logging.warning(f"Cleanup after abort failed: {cleanup_error}")
+            
+            # Final detection of skipped videos for accurate counting
+            if self._is_playlist_download:
+                self._detect_skipped_videos()
             
             self._generate_error_report()
             raise Exception("Download aborted by user")
@@ -344,11 +416,15 @@ Verify installation: ffmpeg -version
             
             # Always clean up on any error
             try:
-                cleanup_result = self._cleanup_incomplete_files()
+                cleanup_result = self._cleanup_incomplete_files(cleanup_type="error")
                 if cleanup_result["cleaned_count"] > 0:
                     logging.info(f"Error cleanup completed: {cleanup_result['cleaned_count']} files removed")
             except Exception as cleanup_error:
                 logging.warning(f"Cleanup after error failed: {cleanup_error}")
+            
+            # Final detection of skipped videos for accurate counting
+            if self._is_playlist_download:
+                self._detect_skipped_videos()
             
             # Generate report even on failure
             self._generate_error_report()
@@ -371,6 +447,86 @@ Verify installation: ffmpeg -version
         finally:
             self._current_ydl = None
 
+    def _extract_playlist_info(self, url):
+        """Extract playlist information to get total video count"""
+        try:
+            with yt_dlp.YoutubeDL({
+                'quiet': True, 
+                'extract_flat': True,
+                'ignoreerrors': True
+            }) as ydl:
+                playlist_info = ydl.extract_info(url, download=False)
+                
+                if playlist_info and 'entries' in playlist_info:
+                    # Count valid entries (filter out None entries)
+                    valid_entries = [entry for entry in playlist_info['entries'] if entry is not None]
+                    return len(valid_entries), playlist_info.get('title', 'Unknown Playlist')
+                else:
+                    return 0, "Unknown Playlist"
+        except Exception as e:
+            logging.warning(f"Could not extract playlist info: {e}")
+            return 0, "Unknown Playlist"
+
+    def get_playlist_progress(self):
+        """Get current playlist progress information"""
+        if not self._is_playlist_download:
+            return None
+            
+        # Calculate completed videos (downloaded + failed + skipped)
+        completed = self._playlist_downloaded_videos + self._playlist_failed_videos + self._playlist_skipped_videos
+        remaining = max(0, self._playlist_total_videos - completed)
+        
+        return {
+            'total': self._playlist_total_videos,
+            'downloaded': self._playlist_downloaded_videos,
+            'failed': self._playlist_failed_videos,
+            'skipped': self._playlist_skipped_videos,
+            'completed': completed,
+            'remaining': remaining
+        }
+
+    def _reset_playlist_tracking(self):
+        """Reset playlist tracking variables"""
+        self._playlist_total_videos = 0
+        self._playlist_downloaded_videos = 0
+        self._playlist_failed_videos = 0
+        self._playlist_skipped_videos = 0
+        self._is_playlist_download = False
+        self._initial_archive_count = 0  # Reset initial archive count
+
+    def _detect_skipped_videos(self):
+        """Detect videos that were skipped (already downloaded) by checking archive file"""
+        if not self._output_directory or not self._is_playlist_download:
+            return
+            
+        try:
+            archive_file = os.path.join(self._output_directory, 'archive.txt')
+            if os.path.exists(archive_file):
+                # Count lines in archive file to see how many videos were skipped
+                with open(archive_file, 'r', encoding='utf-8') as f:
+                    archive_lines = f.readlines()
+                
+                # Calculate total videos in archive after this session
+                total_in_archive = len(archive_lines)
+                
+                # Calculate newly added videos (total in archive - initial count)
+                newly_added = total_in_archive - self._initial_archive_count
+                
+                # Calculate skipped videos (already in archive before this session)
+                # This is the difference between what we've tracked as downloaded vs what was actually added
+                if newly_added > self._playlist_downloaded_videos:
+                    # More videos were added to archive than we tracked as downloaded
+                    # This means some were already downloaded (skipped)
+                    self._playlist_skipped_videos = newly_added - self._playlist_downloaded_videos
+                    logging.info(f"Detected {self._playlist_skipped_videos} already downloaded videos (skipped)")
+                elif newly_added < self._playlist_downloaded_videos:
+                    # We tracked more downloads than were added to archive
+                    # This could happen if some downloads failed to update archive
+                    logging.warning(f"Archive count mismatch: tracked {self._playlist_downloaded_videos} downloads but only {newly_added} added to archive")
+                    
+        except Exception as e:
+            logging.warning(f"Error detecting skipped videos: {e}")
+
     def _progress_hook(self, callback: Callable):
         def hook(d):
             # Check if download should be aborted
@@ -384,6 +540,12 @@ Verify installation: ffmpeg -version
             elif d['status'] == 'finished' and 'filename' in d:
                 # Remove from active downloads when finished
                 self._active_download_files.discard(d['filename'])
+                
+                # Update playlist tracking for successful downloads
+                if self._is_playlist_download:
+                    self._playlist_downloaded_videos += 1
+                    logging.info(f"Playlist progress: {self._playlist_downloaded_videos}/{self._playlist_total_videos} videos downloaded")
+                    
             elif d['status'] == 'error':
                 # Track failed videos
                 error_info = {
@@ -392,7 +554,17 @@ Verify installation: ffmpeg -version
                     'error': d.get('error', 'Unknown error')
                 }
                 self.failed_videos.append(error_info)
+                
+                # Update playlist tracking for failed videos
+                if self._is_playlist_download:
+                    self._playlist_failed_videos += 1
+                    logging.warning(f"Playlist video failed: {error_info['title']}")
+                
                 logging.warning(f"Video failed: {error_info}")
+            
+            # Detect skipped videos periodically
+            if self._is_playlist_download and d.get('status') in ['downloading', 'finished']:
+                self._detect_skipped_videos()
             
             # Pass the original yt-dlp data to the callback
             # This allows the UI to handle formatting and reduces data transformation issues
@@ -417,7 +589,7 @@ Verify installation: ffmpeg -version
         
         # Cleanup immediately when abort is called
         try:
-            cleanup_result = self._cleanup_incomplete_files()
+            cleanup_result = self._cleanup_incomplete_files(cleanup_type="abort")
             if cleanup_result["cleaned_count"] > 0:
                 logging.info(f"Immediate cleanup completed: {cleanup_result['cleaned_count']} files removed")
         except Exception as cleanup_error:
@@ -427,7 +599,7 @@ Verify installation: ffmpeg -version
         """Manually trigger cleanup of incomplete files"""
         return self._cleanup_incomplete_files()
 
-    def _cleanup_incomplete_files(self):
+    def _cleanup_incomplete_files(self, cleanup_type="general"):
         """Clean up incomplete download files"""
         if not self._output_directory:
             return {"cleaned_count": 0, "error": None}
@@ -464,21 +636,26 @@ Verify installation: ffmpeg -version
             
             # Also clean up thumbnail files when aborting or after successful embedding
             thumbnail_patterns = [
-                "*.webp",       # WebP thumbnails
-                "*.jpg",        # JPEG thumbnails
-                "*.jpeg",       # JPEG thumbnails
-                "*.png",        # PNG thumbnails (converted thumbnails)
+                "*.webp",       # WebP thumbnails - always clean these up as they're intermediate files
             ]
-            if self._should_abort:
-                partial_patterns.extend(thumbnail_patterns)
+            # Always clean up WebP files as they're intermediate conversion files
+            partial_patterns.extend(["*.webp"])
+            
+            # During abort or error, also clean up JPG thumbnails to remove partial downloads
+            if cleanup_type in ["abort", "error"]:
+                thumbnail_patterns.extend([
+                    "*.jpg",        # JPEG thumbnails
+                    "*.jpeg",       # JPEG thumbnails
+                    "*.png",        # PNG thumbnails (converted thumbnails)
+                ])
+                partial_patterns.extend(thumbnail_patterns[1:])  # Skip WebP as already added
             
             # Handle duplicate thumbnails - find and remove duplicates
             self._cleanup_duplicate_thumbnails(output_path)
             
-            # Clean up thumbnail files after successful embedding (not during abort)
-            # Skip cleanup to keep thumbnails for Windows File Explorer compatibility
-            # if not self._should_abort:
-            #     self._cleanup_embedded_thumbnails(output_path)
+            # Clean up thumbnail files after successful embedding (not during abort/error)
+            if cleanup_type == "post_processing":
+                self._cleanup_embedded_thumbnails(output_path)
             
             for pattern in partial_patterns:
                 for file_path in output_path.rglob(pattern):
@@ -489,10 +666,13 @@ Verify installation: ffmpeg -version
                             import time
                             file_age = time.time() - file_path.stat().st_mtime
                             
-                            # For thumbnail files during abort, be more aggressive (within 10 minutes)
+                            # For WebP files, always be aggressive since they're intermediate files
+                            # For thumbnail files during abort/error, be more aggressive (within 10 minutes)
                             # For other files, use 1 hour limit
-                            if self._should_abort and pattern in ["*.webp", "*.jpg", "*.jpeg", "*.png"]:
-                                time_limit = 600  # 10 minutes for thumbnails during abort
+                            if pattern == "*.webp":
+                                time_limit = 7200  # 2 hours for WebP files (more generous but still cleanup)
+                            elif cleanup_type in ["abort", "error"] and pattern in ["*.jpg", "*.jpeg", "*.png"]:
+                                time_limit = 600  # 10 minutes for thumbnails during abort/error
                             else:
                                 time_limit = 3600  # 1 hour for other files
                             
@@ -567,32 +747,30 @@ Verify installation: ffmpeg -version
             logging.warning(f"Error cleaning duplicate thumbnails: {e}")
 
     def _cleanup_embedded_thumbnails(self, output_path):
-        """Clean up thumbnail files after they've been embedded into audio files"""
+        """Clean up thumbnail files after they've been embedded into audio/video files"""
         try:
             import time
-            # Find all audio files (mp3, m4a, etc.) that were recently modified
-            audio_files = []
-            for pattern in ["*.mp3", "*.m4a", "*.flac", "*.ogg"]:
-                audio_files.extend(output_path.rglob(pattern))
+            # Find all media files that were recently modified
+            media_files = []
+            for pattern in ["*.mp3", "*.m4a", "*.flac", "*.ogg", "*.mp4", "*.mkv", "*.webm"]:
+                media_files.extend(output_path.rglob(pattern))
             
-            # Find corresponding thumbnail files
-            for audio_file in audio_files:
-                # Check if audio file was modified recently (within last 10 minutes)
-                file_age = time.time() - audio_file.stat().st_mtime
-                if file_age < 600:  # 10 minutes
+            # Clean up any remaining thumbnail files for recent media files
+            for media_file in media_files:
+                # Check if media file was modified recently (within last 5 minutes)
+                file_age = time.time() - media_file.stat().st_mtime
+                if file_age < 300:  # 5 minutes
                     # Look for thumbnail files with matching base name
-                    base_name = audio_file.stem
+                    base_name = media_file.stem
                     for thumb_ext in [".webp", ".jpg", ".jpeg", ".png"]:
-                        thumb_file = audio_file.parent / (base_name + thumb_ext)
+                        thumb_file = media_file.parent / (base_name + thumb_ext)
                         if thumb_file.exists():
                             try:
-                                # Check if thumbnail is older than audio file (means it was embedded)
-                                thumb_age = time.time() - thumb_file.stat().st_mtime
-                                if thumb_age > file_age:  # Thumbnail is older, likely embedded
-                                    thumb_file.unlink()
-                                    logging.debug(f"Cleaned up embedded thumbnail: {thumb_file}")
+                                # Remove the thumbnail file (backup cleanup in case yt-dlp didn't)
+                                thumb_file.unlink()
+                                logging.info(f"Cleaned up remaining thumbnail: {thumb_file}")
                             except Exception as e:
-                                logging.warning(f"Failed to remove embedded thumbnail {thumb_file}: {e}")
+                                logging.warning(f"Failed to remove thumbnail {thumb_file}: {e}")
         
         except Exception as e:
             logging.warning(f"Error during embedded thumbnail cleanup: {e}")

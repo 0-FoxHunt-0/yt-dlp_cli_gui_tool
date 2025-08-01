@@ -53,6 +53,9 @@ class ModernUI:
         
         # Set up signal handlers for graceful exit
         self.setup_signal_handlers()
+        
+        # Debouncing for output directory changes
+        self._output_dir_save_after_id = None
 
     def setup_appearance(self):
         """Configure CustomTkinter appearance"""
@@ -273,6 +276,15 @@ class ModernUI:
             ("embed_subs", "📝 Download Subtitles", False),
         ]
         
+        # Add performance note
+        perf_note = ctk.CTkLabel(
+            metadata_frame,
+            text="🚀 Optimized for maximum speed using all available CPU cores",
+            font=ctk.CTkFont(size=10),
+            text_color=("gray50", "gray50")
+        )
+        perf_note.pack(anchor="w", padx=15, pady=(0, 5))
+        
         # Create checkboxes for each column
         for column, options in [(left_column, col1_options), (middle_column, col2_options), (right_column, col3_options)]:
             for key, text, default in options:
@@ -305,6 +317,8 @@ class ModernUI:
         output_path_frame.pack(fill="x", padx=15, pady=(0, 15))
         
         self.output_var = ctk.StringVar(value=self.config.get("output_directory", self.config.get_default_output_directory()))
+        # Add trace callback to save directory when user types/pastes
+        self.output_var.trace_add("write", self._on_output_directory_changed)
         self.output_entry = ctk.CTkEntry(
             output_path_frame,
             textvariable=self.output_var,
@@ -312,6 +326,10 @@ class ModernUI:
             font=ctk.CTkFont(size=12)
         )
         self.output_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        
+        # Bind focus out event to save directory immediately
+        self.output_entry.bind("<FocusOut>", self._on_output_directory_focus_out)
+        self.output_entry.bind("<Return>", self._on_output_directory_focus_out)
         
         # Button frame for Browse and Clear buttons
         button_frame = ctk.CTkFrame(output_path_frame, fg_color="transparent")
@@ -376,6 +394,16 @@ class ModernUI:
         )
         progress_label.pack(anchor="w", padx=15, pady=(15, 10))
         
+        # Playlist counter (initially hidden)
+        self.playlist_counter = ctk.CTkLabel(
+            progress_frame,
+            text="",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=("blue", "lightblue")
+        )
+        self.playlist_counter.pack(anchor="w", padx=15, pady=(0, 5))
+        self.playlist_counter.pack_forget()  # Hide initially
+        
         # Progress bar
         self.progress_bar = ctk.CTkProgressBar(progress_frame)
         self.progress_bar.pack(fill="x", padx=15, pady=(0, 10))
@@ -426,7 +454,40 @@ class ModernUI:
         if directory:
             self.output_var.set(directory)
             # Save to config
-            self.config.set("output_directory", directory)
+            self._save_output_directory(directory)
+
+    def _save_output_directory(self, directory):
+        """Save output directory to config"""
+        self.config.set("output_directory", directory)
+
+    def _on_output_directory_changed(self, *args):
+        """Callback when output directory is changed by typing/pasting"""
+        directory = self.output_var.get().strip()
+        if directory:
+            # Cancel previous save timer if it exists
+            if self._output_dir_save_after_id:
+                self.root.after_cancel(self._output_dir_save_after_id)
+            
+            # Schedule save after 500ms delay (debouncing)
+            self._output_dir_save_after_id = self.root.after(500, self._save_output_directory_delayed, directory)
+
+    def _save_output_directory_delayed(self, directory):
+        """Save output directory with validation after delay"""
+        try:
+            # Check if it's a valid path (even if it doesn't exist yet)
+            if os.path.isabs(directory) or os.path.normpath(directory) != '.':
+                self._save_output_directory(directory)
+        except Exception:
+            # If there's any error with the path, don't save
+            pass
+        finally:
+            self._output_dir_save_after_id = None
+
+    def _on_output_directory_focus_out(self, event):
+        """Callback when output directory entry loses focus"""
+        directory = self.output_var.get().strip()
+        if directory:
+            self._save_output_directory(directory)
 
     def clear_output(self):
         """Clear output directory and reset to default"""
@@ -441,6 +502,9 @@ class ModernUI:
             self.log_status("🛑 Download abort requested...")
             self.progress_text.configure(text="⏹️ Aborting download...")
             self.log_status("🧹 Cleaning up incomplete files...")
+            
+            # Hide playlist counter
+            self.hide_playlist_counter()
             
             # Hide abort button and show download button
             self.abort_button.pack_forget()
@@ -470,6 +534,11 @@ class ModernUI:
     def update_progress(self, d):
         """Update progress bar and status"""
         try:
+            # Update playlist counter if this is a playlist download
+            playlist_progress = self.downloader.get_playlist_progress()
+            if playlist_progress:
+                self.update_playlist_counter(playlist_progress)
+            
             if d['status'] == 'downloading':
                 # Extract progress percentage
                 if d.get('total_bytes'):
@@ -542,6 +611,42 @@ class ModernUI:
         """Clear status log"""
         self.status_text.delete("0.0", "end")
 
+    def show_playlist_counter(self, total_videos):
+        """Show playlist counter with total video count"""
+        self.playlist_counter.configure(text=f"📋 Playlist: {total_videos} videos total")
+        self.playlist_counter.pack(anchor="w", padx=15, pady=(0, 5))
+
+    def hide_playlist_counter(self):
+        """Hide playlist counter"""
+        self.playlist_counter.pack_forget()
+
+    def update_playlist_counter(self, progress_info):
+        """Update playlist counter with current progress"""
+        if progress_info:
+            downloaded = progress_info['downloaded']
+            failed = progress_info['failed']
+            skipped = progress_info['skipped']
+            completed = progress_info['completed']
+            total = progress_info['total']
+            
+            # Create status text with emojis
+            status_parts = []
+            if downloaded > 0:
+                status_parts.append(f"✅ {downloaded}")
+            if failed > 0:
+                status_parts.append(f"❌ {failed}")
+            if skipped > 0:
+                status_parts.append(f"⏭️ {skipped}")
+            
+            # Show completed/total as the main counter
+            if status_parts:
+                status_text = " | ".join(status_parts)
+                counter_text = f"📋 Playlist Progress: {completed}/{total} videos ({status_text})"
+            else:
+                counter_text = f"📋 Playlist Progress: {completed}/{total} videos"
+            
+            self.playlist_counter.configure(text=counter_text)
+
     def start_download(self):
         """Start the download process"""
         url = self.url_entry.get().strip()
@@ -594,6 +699,21 @@ class ModernUI:
             # Auto-detect if this is a playlist
             is_playlist = self.is_playlist_url(url)
             
+            # Show playlist counter if this is a playlist
+            if is_playlist:
+                # Get playlist info to show initial counter
+                try:
+                    import yt_dlp
+                    with yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True}) as ydl:
+                        playlist_info = ydl.extract_info(url, download=False)
+                        if playlist_info and 'entries' in playlist_info:
+                            valid_entries = [entry for entry in playlist_info['entries'] if entry is not None]
+                            total_videos = len(valid_entries)
+                            self.root.after(0, self.show_playlist_counter, total_videos)
+                except Exception as e:
+                    # If we can't get playlist info, still show counter with unknown count
+                    self.root.after(0, self.show_playlist_counter, "?")
+            
             # Collect metadata options
             metadata_options = {
                 key: var.get() for key, var in self.metadata_vars.items()
@@ -617,6 +737,9 @@ class ModernUI:
 
     def download_completed(self, success, message):
         """Handle download completion"""
+        # Hide playlist counter
+        self.hide_playlist_counter()
+        
         # Check for error summary
         error_summary = self.downloader.get_error_summary()
         
