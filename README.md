@@ -22,13 +22,71 @@ A Python-based YouTube downloader with both GUI and CLI interfaces using yt-dlp.
 - tkinter (usually comes with Python)
 
 ## Installation
-1. Clone this repository
-2. Install requirements: `pip install -r requirements.txt`
+
+### Option 1: Install as a package (recommended)
+```bash
+# Install in development mode (for development)
+pip install -e .
+
+# Or install globally
+pip install .
+```
+
+After installation, you can run the tool from anywhere:
+```bash
+# Modern GUI mode (default)
+yt-dlp-gui
+
+# Terminal UI mode
+yt-dlp-gui --terminal
+
+# Direct download mode
+yt-dlp-gui --url <YouTube URL> [--audio-only] [--output <directory>]
+
+# Alternative command name
+ytdlp-gui --url <YouTube URL>
+```
+
+### Option 2: Run directly from source
+```bash
+# Clone this repository
+git clone https://github.com/yourusername/yt-dlp_cli_gui_tool.git
+cd yt-dlp_cli_gui_tool
+
+# Install requirements
+pip install -r requirements.txt
+
+# Run the application
+python main.py
+```
 
 ## Usage
+
+### Package installation (Option 1)
+- Modern GUI mode (default): `yt-dlp-gui`
+- Terminal UI mode: `yt-dlp-gui --terminal`
+- Direct download mode: `yt-dlp-gui --url <YouTube URL>`
+
+### Direct execution (Option 2)
 - Modern GUI mode (default): `python main.py`
 - Terminal UI mode: `python main.py --terminal`
 - Direct download mode: `python main.py --url <YouTube URL>`
+
+## Examples
+
+```bash
+# Download a video with GUI
+yt-dlp-gui
+
+# Download audio only from a specific URL
+yt-dlp-gui --url "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --audio-only
+
+# Download to a specific directory
+yt-dlp-gui --url "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --output "C:\Downloads"
+
+# Use terminal interface
+yt-dlp-gui --terminal
+```
 
 ## Configuration
 The application automatically creates a `config/settings.json` file to store user preferences:
@@ -38,3 +96,10 @@ The application automatically creates a `config/settings.json` file to store use
 - **Default format**: Preferred download format (audio/video)
 
 Settings are automatically saved and restored between sessions.
+
+## Troubleshooting
+
+### If you get import errors:
+1. Make sure you're in the project directory
+2. Install requirements: `pip install -r requirements.txt`
+3. Try running: `python main.py`
