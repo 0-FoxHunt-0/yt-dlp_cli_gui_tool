@@ -44,6 +44,23 @@ class Downloader:
         # Check if FFmpeg is available
         self.ffmpeg_available = self._check_ffmpeg()
 
+        # Log tool versions for diagnostics
+        try:
+            ytdlp_version = getattr(yt_dlp, "version", None)
+            if ytdlp_version and hasattr(ytdlp_version, "__version__"):
+                logging.info(f"yt-dlp version: {ytdlp_version.__version__}")
+            else:
+                logging.info("yt-dlp version: unknown")
+        except Exception:
+            logging.info("yt-dlp version: unknown")
+        try:
+            result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                first_line = result.stdout.splitlines()[0] if result.stdout else "ffmpeg (version unknown)"
+                logging.info(first_line)
+        except Exception:
+            pass
+
         self.base_options = {
             'format': 'bestaudio/best',
             'download_archive': 'archive.txt',
@@ -224,40 +241,59 @@ Verify installation: ffmpeg -version
                     'preferedformat': 'mp4',
                 })
         else:
+            # Enforce MP3 output: require FFmpeg, otherwise fail fast per requirement
+            if not self.ffmpeg_available:
+                instructions = self._get_ffmpeg_installation_instructions()
+                raise Exception(
+                    "Audio-only downloads require FFmpeg to convert to MP3. "
+                    "Please install FFmpeg and ensure it is on your PATH.\n\n" + instructions
+                )
             # For audio, use optimized approach for faster post-processing
             # Remove conflicting options first
             options.pop('extractaudio', None)
             options.pop('audioformat', None)
             options.pop('audioquality', None)
             
-            # Set the exact options from your working command
+            # Use -x style extract-audio to MP3 and ensure final extension is mp3
             options['format'] = 'bestaudio/best'  # Prefer formats that need less conversion
+            options['extractaudio'] = True       # yt-dlp -x
+            options['audioformat'] = 'mp3'       # --audio-format mp3
+            options['audioquality'] = '0'        # --audio-quality 0 (best)
+            options['final_ext'] = 'mp3'
+            # Explicit postprocessors in correct order to preserve embedding behavior
             options['postprocessors'] = [
                 {
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
-                    'preferredquality': '0',  # Keep max quality, optimize with system resources
+                    'preferredquality': '0',
+                },
+                {
+                    'key': 'EmbedThumbnail',
+                    'already_have_thumbnail': False,
+                },
+                {
+                    'key': 'FFmpegMetadata',
                 }
             ]
             
-            # Add embedding exactly like your command does it
-            if metadata_options.get('embed_thumbnail', True) and self.ffmpeg_available:
-                # Skip separate thumbnail conversion step - embed directly
-                options['postprocessors'].append({
-                    'key': 'EmbedThumbnail',
-                    'already_have_thumbnail': False,
-                })
-            
-            if metadata_options.get('embed_metadata', True) and self.ffmpeg_available:
-                options['postprocessors'].append({
-                    'key': 'FFmpegMetadata',
-                })
+            # Allow toggling embedding via UI options while keeping MP3 enforcement
+            if not metadata_options.get('embed_thumbnail', True):
+                options['postprocessors'] = [pp for pp in options['postprocessors'] if pp.get('key') != 'EmbedThumbnail']
+            if not metadata_options.get('embed_metadata', True):
+                options['postprocessors'] = [pp for pp in options['postprocessors'] if pp.get('key') != 'FFmpegMetadata']
 
         # Configure additional metadata options
         options['writedescription'] = metadata_options.get('write_description', False)
         options['writeinfojson'] = metadata_options.get('write_info_json', False)
         options['writesubtitles'] = metadata_options.get('embed_subs', False)
         options['writeautomaticsub'] = metadata_options.get('embed_subs', False)
+
+        # Persist last metadata preferences for smarter cleanup
+        self._last_metadata_prefs = {
+            'write_description': bool(options['writedescription']),
+            'write_info_json': bool(options['writeinfojson']),
+            'embed_subs': bool(options['writesubtitles'] or options['writeautomaticsub'])
+        }
         
         # Only enable chapters if FFmpeg is available
         if self.ffmpeg_available:
@@ -654,10 +690,14 @@ Verify installation: ffmpeg -version
                 "*.temp.webm",      # temporary WebM files
                 "*.temp.mkv",       # temporary MKV files
                 "*.ytdl",           # yt-dlp specific temp files
+                "*.ytdl.meta",      # yt-dlp meta remnants
+                "*.meta",           # generic meta remnants
                 "*.webm.part",      # WebM partial files
                 "*.mp4.part",       # MP4 partial files
                 "*.mkv.part",       # MKV partial files
                 "*.m4a.part",       # M4A partial files
+                "*.frag",           # HLS/DASH fragment leftovers
+                "*.fragment*",      # any fragment naming
                 "*.incomplete",     # incomplete files
                 "*.downloading",    # downloading files
             ]
@@ -709,6 +749,30 @@ Verify installation: ffmpeg -version
                         except:
                             pass
             
+            # Clean up auxiliary metadata files based on preferences
+            try:
+                prefs = getattr(self, '_last_metadata_prefs', {
+                    'write_description': False,
+                    'write_info_json': False,
+                    'embed_subs': False
+                })
+                # If not requested, remove stale artifacts created by accidental flags or previous runs
+                if not prefs.get('write_info_json'):
+                    for fp in output_path.rglob("*.info.json"):
+                        if fp.is_file():
+                            cleanup_files.add(str(fp))
+                if not prefs.get('write_description'):
+                    for fp in output_path.rglob("*.description"):
+                        if fp.is_file():
+                            cleanup_files.add(str(fp))
+                if not prefs.get('embed_subs'):
+                    for ext in ["*.vtt", "*.srt", "*.ass", "*.lrc"]:
+                        for fp in output_path.rglob(ext):
+                            if fp.is_file():
+                                cleanup_files.add(str(fp))
+            except Exception as _:
+                pass
+
             # Clean up the files
             cleaned_count = 0
             cleaned_files = []
