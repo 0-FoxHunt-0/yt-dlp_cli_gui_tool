@@ -260,8 +260,8 @@ Verify installation: ffmpeg -version
             options['audioformat'] = 'mp3'       # --audio-format mp3
             options['audioquality'] = '0'        # --audio-quality 0 (best)
             options['final_ext'] = 'mp3'
-            # For audio-only we want failures to be visible, not silently ignored
-            options['ignoreerrors'] = False
+            # Error behavior: be strict for single videos, but continue for playlists
+            options['ignoreerrors'] = True if is_playlist else False
             # Explicit postprocessors in correct order to preserve embedding behavior
             options['postprocessors'] = [
                 {

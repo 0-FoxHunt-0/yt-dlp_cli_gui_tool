@@ -13,7 +13,10 @@ class Config:
             "output_directory": self._get_default_output_directory(),
             "default_format": "audio",
             "auto_clear_logs": False,
-            "download_history": True
+            "download_history": True,
+            # Persist open tasks state
+            "tasks_count": 1,
+            "task_urls": []
         }
         self.settings = self.load_settings()
         # Ensure default output directory exists

@@ -47,6 +47,13 @@ class ModernUI:
         # Create and pack the GUI elements
         self.create_widgets()
         
+        # Track debounced persistence and restoration state
+        self._persist_after_id = None
+        self._restoring_tasks = False
+        
+        # Restore tasks state (count and URLs) from config
+        self.restore_tasks_from_config()
+        
         # Center the window
         self.center_window()
         
@@ -113,6 +120,69 @@ class ModernUI:
         
         # Tasks section (multi-task support)
         self.create_tasks_section()
+
+    def restore_tasks_from_config(self):
+        """Restore number of tasks and their URLs from config"""
+        try:
+            self._restoring_tasks = True
+            urls = self.config.get("task_urls", []) or []
+            count = self.config.get("tasks_count", 1)
+            try:
+                count = int(count)
+            except Exception:
+                count = 1
+            if count < 1:
+                count = 1
+
+            # Create tasks and set URLs
+            for i in range(count):
+                url_value = urls[i] if i < len(urls) else ""
+                self.add_task(url=url_value)
+        finally:
+            self._restoring_tasks = False
+            # Persist once after restore to normalize values
+            self._persist_tasks_to_config()
+
+    def _attach_task_bindings(self, task):
+        """Attach listeners to task inputs for persistence"""
+        try:
+            task.url_var.trace_add("write", lambda *args: self._on_task_url_changed())
+        except Exception:
+            pass
+
+    def _on_task_url_changed(self):
+        if getattr(self, '_restoring_tasks', False):
+            return
+        self._schedule_persist_tasks()
+
+    def _schedule_persist_tasks(self):
+        try:
+            if self._persist_after_id is not None:
+                try:
+                    self.root.after_cancel(self._persist_after_id)
+                except Exception:
+                    pass
+            # Debounce saves to avoid excessive disk writes
+            self._persist_after_id = self.root.after(300, self._persist_tasks_to_config)
+        except Exception:
+            # Fallback to immediate persist
+            self._persist_tasks_to_config()
+
+    def _persist_tasks_to_config(self):
+        """Save current tasks count and URLs to config"""
+        try:
+            urls = []
+            for t in getattr(self, 'tasks', []):
+                try:
+                    urls.append(t.get_url())
+                except Exception:
+                    urls.append("")
+            # Batch update settings then save once
+            self.config.settings["task_urls"] = urls
+            self.config.settings["tasks_count"] = len(getattr(self, 'tasks', []))
+            self.config.save_settings()
+        except Exception:
+            pass
 
     def create_header(self):
         """Create header with title and theme toggle"""
@@ -196,8 +266,7 @@ class ModernUI:
         self.tasks_list_frame = ctk.CTkFrame(tasks_frame)
         self.tasks_list_frame.pack(fill="both", expand=True, padx=15, pady=(0, 10))
 
-        # Create an initial empty task for convenience
-        self.add_task()
+        # Initial tasks are restored from config in __init__
 
     def create_options_section(self):
         """Create download options section"""
@@ -461,14 +530,25 @@ class ModernUI:
         messagebox.showinfo("Output", f"Default output directory reset to: {default_dir}")
 
     # ===== Multi-task controls =====
-    def add_task(self):
-        """Add a new task row"""
+    def add_task(self, url: str = ""):
+        """Add a new task row (optionally with preset URL)"""
         default_output = self.config.get("output_directory", self.config.get_default_output_directory())
         task = TaskItem(self, parent_frame=self.tasks_list_frame, default_output=default_output)
         self.tasks.append(task)
+        # Set URL if provided
+        try:
+            if url:
+                task.url_var.set(url)
+        except Exception:
+            pass
         # Re-number task titles
         for idx, t in enumerate(self.tasks, start=1):
             t.update_title(f"Task {idx}")
+        # Attach bindings for persistence
+        self._attach_task_bindings(task)
+        # Persist updated tasks unless we're restoring
+        if not getattr(self, '_restoring_tasks', False):
+            self._schedule_persist_tasks()
         return task
 
     def remove_task(self, task):
@@ -482,6 +562,8 @@ class ModernUI:
                 self.tasks.remove(task)
                 for idx, t in enumerate(self.tasks, start=1):
                     t.update_title(f"Task {idx}")
+                # Persist after removal
+                self._schedule_persist_tasks()
         except Exception:
             pass
 
@@ -643,6 +725,11 @@ class ModernUI:
         # Save window size to config
         geometry = self.root.geometry()
         self.config.set("window_size", geometry)
+        # Persist tasks before closing
+        try:
+            self._persist_tasks_to_config()
+        except Exception:
+            pass
         
         running = any(t.is_running for t in getattr(self, 'tasks', []))
         if running:
