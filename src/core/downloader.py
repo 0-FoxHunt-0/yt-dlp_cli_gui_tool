@@ -260,12 +260,18 @@ Verify installation: ffmpeg -version
             options['audioformat'] = 'mp3'       # --audio-format mp3
             options['audioquality'] = '0'        # --audio-quality 0 (best)
             options['final_ext'] = 'mp3'
+            # For audio-only we want failures to be visible, not silently ignored
+            options['ignoreerrors'] = False
             # Explicit postprocessors in correct order to preserve embedding behavior
             options['postprocessors'] = [
                 {
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
                     'preferredquality': '0',
+                },
+                {
+                    'key': 'FFmpegThumbnailsConvertor',
+                    'format': 'jpg',
                 },
                 {
                     'key': 'EmbedThumbnail',
@@ -316,19 +322,14 @@ Verify installation: ffmpeg -version
                 options['postprocessor_args'] = {}
             # Add FFmpeg args optimized for maximum resource usage
             if is_audio:
-                # Audio-specific FFmpeg args optimized for speed with maximum resource usage
+                # Audio-specific FFmpeg args (safe for MP3 extraction/embedding)
                 options['postprocessor_args']['ffmpeg'] = [
-                    '-hide_banner', 
+                    '-hide_banner',
                     '-loglevel', 'error',
-                    '-threads', '0',  # Use all available CPU cores
-                    '-thread_type', 'frame+slice',  # Use both frame and slice threading
-                    '-cpu-used', '0',  # Use all CPU cycles for encoding (slowest but highest quality)
+                    '-threads', '0',
                     '-map_metadata', '0',
                     '-id3v2_version', '3',
                     '-write_id3v1', '1',
-                    '-movflags', '+faststart',  # Optimize for fast streaming
-                    '-bufsize', '2M',  # Larger buffer for smoother processing
-                    '-readrate_initial_burst', '2.0',  # Allow faster initial processing
                 ]
             else:
                 # Video-specific FFmpeg args optimized for speed with maximum resource usage

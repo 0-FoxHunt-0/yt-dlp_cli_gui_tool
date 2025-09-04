@@ -23,8 +23,10 @@ class ModernUI:
         # Configure CustomTkinter appearance
         self.setup_appearance()
         
+        # Keep a single downloader instance for capability checks (FFmpeg, etc.)
         self.downloader = Downloader()
-        self.download_thread = None
+        # Multi-task management
+        self.tasks = []  # List of TaskItem instances
         
         # Check FFmpeg availability and show warning if needed
         if not self.downloader.ffmpeg_available:
@@ -103,26 +105,14 @@ class ModernUI:
 
     def create_scrollable_content(self):
         """Create all content within the scrollable frame"""
-        # URL input section
-        self.create_url_section()
-        
         # Options section
         self.create_options_section()
         
         # Metadata section
         self.create_metadata_section()
         
-        # Output section
-        self.create_output_section()
-        
-        # Download button
-        self.create_download_section()
-        
-        # Progress section
-        self.create_progress_section()
-        
-        # Status section
-        self.create_status_section()
+        # Tasks section (multi-task support)
+        self.create_tasks_section()
 
     def create_header(self):
         """Create header with title and theme toggle"""
@@ -154,27 +144,60 @@ class ModernUI:
         )
         self.theme_button.pack(side="right", pady=(0, 10))
 
-    def create_url_section(self):
-        """Create URL input section"""
-        url_frame = ctk.CTkFrame(self.scrollable_frame)
-        url_frame.pack(fill="x", pady=(0, 15))
-        
-        # URL label
-        url_label = ctk.CTkLabel(
-            url_frame, 
-            text="YouTube URL", 
+    def create_tasks_section(self):
+        """Create the tasks management section for multiple concurrent downloads"""
+        tasks_frame = ctk.CTkFrame(self.scrollable_frame)
+        tasks_frame.pack(fill="both", expand=True, pady=(0, 15))
+
+        # Header row with controls
+        header = ctk.CTkFrame(tasks_frame, fg_color="transparent")
+        header.pack(fill="x", padx=15, pady=(15, 10))
+
+        title_label = ctk.CTkLabel(
+            header,
+            text="Tasks",
             font=ctk.CTkFont(size=14, weight="bold")
         )
-        url_label.pack(anchor="w", padx=15, pady=(15, 5))
-        
-        # URL entry with placeholder
-        self.url_entry = ctk.CTkEntry(
-            url_frame,
-            placeholder_text="https://www.youtube.com/watch?v=...",
-            height=40,
-            font=ctk.CTkFont(size=12)
+        title_label.pack(side="left")
+
+        controls_frame = ctk.CTkFrame(header, fg_color="transparent")
+        controls_frame.pack(side="right")
+
+        add_btn = ctk.CTkButton(
+            controls_frame,
+            text="➕ Add Task",
+            width=110,
+            height=32,
+            command=self.add_task
         )
-        self.url_entry.pack(fill="x", padx=15, pady=(0, 15))
+        add_btn.pack(side="left", padx=(0, 8))
+
+        run_all_btn = ctk.CTkButton(
+            controls_frame,
+            text="▶ Run All",
+            width=100,
+            height=32,
+            command=self.run_all_tasks
+        )
+        run_all_btn.pack(side="left", padx=(0, 8))
+
+        scram_btn = ctk.CTkButton(
+            controls_frame,
+            text="🛑 Scram",
+            width=100,
+            height=32,
+            fg_color=("red", "darkred"),
+            hover_color=("darkred", "red"),
+            command=self.scram_all_tasks
+        )
+        scram_btn.pack(side="left")
+
+        # Container for task items (stacked vertically)
+        self.tasks_list_frame = ctk.CTkFrame(tasks_frame)
+        self.tasks_list_frame.pack(fill="both", expand=True, padx=15, pady=(0, 10))
+
+        # Create an initial empty task for convenience
+        self.add_task()
 
     def create_options_section(self):
         """Create download options section"""
@@ -298,61 +321,14 @@ class ModernUI:
                 )
                 checkbox.pack(anchor="w", pady=1)
 
-    def create_output_section(self):
-        """Create output directory section"""
-        output_frame = ctk.CTkFrame(self.scrollable_frame)
-        output_frame.pack(fill="x", pady=(0, 15))
-        
-        # Output label
-        output_label = ctk.CTkLabel(
-            output_frame, 
-            text="Output Directory", 
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        output_label.pack(anchor="w", padx=15, pady=(15, 10))
-        
-        # Output path
-        output_path_frame = ctk.CTkFrame(output_frame, fg_color="transparent")
-        output_path_frame.pack(fill="x", padx=15, pady=(0, 15))
-        
-        self.output_var = ctk.StringVar(value=self.config.get("output_directory", self.config.get_default_output_directory()))
-        # Add trace callback to save directory when user types/pastes
-        self.output_var.trace_add("write", self._on_output_directory_changed)
-        self.output_entry = ctk.CTkEntry(
-            output_path_frame,
-            textvariable=self.output_var,
-            height=35,
-            font=ctk.CTkFont(size=12)
-        )
-        self.output_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
-        
-        # Bind focus out event to save directory immediately
-        self.output_entry.bind("<FocusOut>", self._on_output_directory_focus_out)
-        self.output_entry.bind("<Return>", self._on_output_directory_focus_out)
-        
-        # Button frame for Browse and Clear buttons
-        button_frame = ctk.CTkFrame(output_path_frame, fg_color="transparent")
-        button_frame.pack(side="right")
-        
-        browse_button = ctk.CTkButton(
-            button_frame,
-            text="Browse",
-            width=80,
-            height=35,
-            command=self.browse_output
-        )
-        browse_button.pack(side="left", padx=(0, 5))
-        
-        clear_button = ctk.CTkButton(
-            button_frame,
-            text="Clear",
-            width=60,
-            height=35,
-            command=self.clear_output,
-            fg_color=("gray70", "gray30"),
-            hover_color=("gray60", "gray40")
-        )
-        clear_button.pack(side="left")
+    # ===== Legacy single-output directory handlers (kept for config persistence) =====
+    # These are used to persist a default output directory used to prefill new tasks
+    def browse_output(self):
+        """Browse for output directory (updates default for new tasks)"""
+        directory = filedialog.askdirectory(initialdir=self.config.get("output_directory", self.config.get_default_output_directory()))
+        if directory:
+            # Save to config so newly added tasks are prefilled
+            self._save_output_directory(directory)
 
     def create_download_section(self):
         """Create download button section"""
@@ -456,19 +432,12 @@ class ModernUI:
             self._save_output_directory(directory)
 
     def _save_output_directory(self, directory):
-        """Save output directory to config"""
+        """Save output directory to config (used as default for new tasks)"""
         self.config.set("output_directory", directory)
 
     def _on_output_directory_changed(self, *args):
-        """Callback when output directory is changed by typing/pasting"""
-        directory = self.output_var.get().strip()
-        if directory:
-            # Cancel previous save timer if it exists
-            if self._output_dir_save_after_id:
-                self.root.after_cancel(self._output_dir_save_after_id)
-            
-            # Schedule save after 500ms delay (debouncing)
-            self._output_dir_save_after_id = self.root.after(500, self._save_output_directory_delayed, directory)
+        """No-op for per-task outputs; retained for compatibility"""
+        pass
 
     def _save_output_directory_delayed(self, directory):
         """Save output directory with validation after delay"""
@@ -483,31 +452,50 @@ class ModernUI:
             self._output_dir_save_after_id = None
 
     def _on_output_directory_focus_out(self, event):
-        """Callback when output directory entry loses focus"""
-        directory = self.output_var.get().strip()
-        if directory:
-            self._save_output_directory(directory)
+        return
 
     def clear_output(self):
-        """Clear output directory and reset to default"""
+        """Reset default output directory used to prefill new tasks"""
         default_dir = self.config.reset_output_directory()
-        self.output_var.set(default_dir)
-        self.log_status(f"📁 Output directory reset to default: {default_dir}")
+        # Inform the user in a dialog instead of a now-removed global log
+        messagebox.showinfo("Output", f"Default output directory reset to: {default_dir}")
 
-    def abort_download(self):
-        """Abort the current download"""
-        if self.download_thread and self.download_thread.is_alive():
-            self.downloader.abort_download()
-            self.log_status("🛑 Download abort requested...")
-            self.progress_text.configure(text="⏹️ Aborting download...")
-            self.log_status("🧹 Cleaning up incomplete files...")
-            
-            # Hide playlist/status counter
-            self.hide_playlist_counter()
-            
-            # Hide abort button and show download button
-            self.abort_button.pack_forget()
-            self.download_button.pack(pady=10)
+    # ===== Multi-task controls =====
+    def add_task(self):
+        """Add a new task row"""
+        default_output = self.config.get("output_directory", self.config.get_default_output_directory())
+        task = TaskItem(self, parent_frame=self.tasks_list_frame, default_output=default_output)
+        self.tasks.append(task)
+        # Re-number task titles
+        for idx, t in enumerate(self.tasks, start=1):
+            t.update_title(f"Task {idx}")
+        return task
+
+    def remove_task(self, task):
+        """Remove a task row"""
+        try:
+            if task in self.tasks:
+                # Abort if running
+                if task.is_running:
+                    task.abort()
+                task.destroy()
+                self.tasks.remove(task)
+                for idx, t in enumerate(self.tasks, start=1):
+                    t.update_title(f"Task {idx}")
+        except Exception:
+            pass
+
+    def run_all_tasks(self):
+        """Start all tasks that are not yet running and have a URL"""
+        for task in self.tasks:
+            if not task.is_running and task.get_url():
+                task.start()
+
+    def scram_all_tasks(self):
+        """Abort all running tasks"""
+        for task in self.tasks:
+            if task.is_running:
+                task.abort()
     
     def is_playlist_url(self, url):
         """Detect if the URL is a playlist based on YouTube URL parameters"""
@@ -530,261 +518,41 @@ class ModernUI:
             
         return False
 
+    # Per-task progress is handled inside TaskItem
     def update_progress(self, d):
-        """Update progress bar and status"""
-        try:
-            # Update progress counter for both playlists and single videos
-            progress_info = self.downloader.get_playlist_progress()
-            if progress_info:
-                if self.downloader._is_playlist_download:
-                    self.update_playlist_counter(progress_info)
-                else:
-                    # For single videos, show skipped status if applicable
-                    if progress_info['skipped'] > 0:
-                        self.show_single_video_status("⏭️ Already downloaded (skipped)")
-                    elif progress_info['failed'] > 0:
-                        self.show_single_video_status("❌ Download failed")
-                    elif progress_info['downloaded'] > 0:
-                        self.show_single_video_status("✅ Downloaded successfully")
-            
-            if d['status'] == 'downloading':
-                # Extract progress percentage
-                if d.get('total_bytes'):
-                    downloaded = d.get('downloaded_bytes', 0)
-                    total = d.get('total_bytes', 0)
-                    progress = (downloaded / total) if total > 0 else 0
-                else:
-                    progress_str = d.get('_percent_str', '0%').replace('%', '')
-                    try:
-                        progress = float(progress_str) / 100
-                    except ValueError:
-                        progress = 0
-                
-                # Update progress bar
-                self.progress_bar.set(progress)
-                
-                # Update progress text
-                filename = os.path.basename(d.get('filename', '')).rsplit('.', 1)[0]
-                speed = d.get('speed', 0)
-                eta = d.get('eta', 0)
-                
-                if speed and eta:
-                    speed_mb = speed / 1024 / 1024
-                    if eta > 60:
-                        eta_str = f"{eta // 60}m {eta % 60}s"
-                    else:
-                        eta_str = f"{eta}s"
-                    status_text = f"Downloading: {filename} ({speed_mb:.1f} MB/s, ETA: {eta_str})"
-                else:
-                    status_text = f"Downloading: {filename}"
-                
-                self.progress_text.configure(text=status_text)
-                
-                # Only log status periodically to avoid spam (every 5% progress or significant events)
-                progress_percent = progress * 100
-                if not hasattr(self, '_last_logged_progress'):
-                    self._last_logged_progress = 0
-                    self._last_logged_filename = ""
-                
-                # Log only if progress increased by 5% or filename changed
-                if (progress_percent - self._last_logged_progress >= 5.0 or 
-                    filename != self._last_logged_filename):
-                    self.log_status(f"⏬ {status_text}")
-                    self._last_logged_progress = progress_percent
-                    self._last_logged_filename = filename
-                
-            elif d['status'] == 'finished':
-                filename = os.path.basename(d.get('filename', '')).rsplit('.', 1)[0]
-                self.progress_text.configure(text=f"Processing: {filename}")
-                self.log_status(f"🔄 Processing: {filename}")
-                # Reset progress tracking for next download
-                self._last_logged_progress = 0
-                self._last_logged_filename = ""
-                
-            elif d['status'] == 'error':
-                error_msg = d.get('error', 'Unknown error')
-                self.progress_text.configure(text=f"Error: {error_msg}")
-                self.log_status(f"❌ Error: {error_msg}")
-                
-        except Exception as e:
-            self.log_status(f"❌ Progress update error: {str(e)}")
+        return
 
     def log_status(self, message):
-        """Add message to status log"""
-        self.status_text.insert("end", f"{message}\n")
-        self.status_text.see("end")
-        self.root.update_idletasks()
+        # Global logger no longer has a single textbox; print to stdout as fallback
+        try:
+            print(message)
+        except Exception:
+            pass
 
     def clear_status(self):
-        """Clear status log"""
-        self.status_text.delete("0.0", "end")
+        return
 
     def show_playlist_counter(self, total_videos):
-        """Show playlist counter with total video count"""
-        self.playlist_counter.configure(text=f"📋 Playlist: {total_videos} videos total")
-        self.playlist_counter.pack(anchor="w", padx=15, pady=(0, 5))
+        return
 
     def hide_playlist_counter(self):
-        """Hide playlist counter"""
-        self.playlist_counter.pack_forget()
+        return
     
     def show_single_video_status(self, status_text):
-        """Show status for single video downloads"""
-        self.playlist_counter.configure(text=status_text)
-        self.playlist_counter.pack(anchor="w", padx=15, pady=(0, 5))
+        return
 
     def update_playlist_counter(self, progress_info):
-        """Update playlist counter with current progress"""
-        if progress_info:
-            downloaded = progress_info['downloaded']
-            failed = progress_info['failed']
-            skipped = progress_info['skipped']
-            completed = progress_info['completed']
-            total = progress_info['total']
-            
-            # Create status text with emojis
-            status_parts = []
-            if downloaded > 0:
-                status_parts.append(f"✅ {downloaded}")
-            if failed > 0:
-                status_parts.append(f"❌ {failed}")
-            if skipped > 0:
-                status_parts.append(f"⏭️ {skipped}")
-            
-            # Show completed/total as the main counter
-            if status_parts:
-                status_text = " | ".join(status_parts)
-                counter_text = f"📋 Playlist Progress: {completed}/{total} videos ({status_text})"
-            else:
-                counter_text = f"📋 Playlist Progress: {completed}/{total} videos"
-            
-            self.playlist_counter.configure(text=counter_text)
+        return
 
+    # Per-task start handled in TaskItem
     def start_download(self):
-        """Start the download process"""
-        url = self.url_entry.get().strip()
-        
-        # Validate URL
-        if not url or url == "https://www.youtube.com/watch?v=...":
-            messagebox.showerror("Error", "Please enter a valid YouTube URL")
-            return
-        
-        if not url.startswith(('http://', 'https://')):
-            messagebox.showerror("Error", "Please enter a valid URL starting with http:// or https://")
-            return
-        
-        # Validate output directory
-        output_dir = self.output_var.get()
-        if not os.path.exists(output_dir):
-            try:
-                os.makedirs(output_dir)
-            except Exception as e:
-                messagebox.showerror("Error", f"Cannot create output directory: {str(e)}")
-                return
-        
-        # Auto-detect playlist and provide immediate feedback
-        is_playlist = self.is_playlist_url(url)
-        if is_playlist:
-            self.progress_text.configure(text="📑 Detected playlist - preparing download...")
-            self.log_status("📑 Detected playlist URL - will download all videos")
-        else:
-            self.progress_text.configure(text="🎬 Detected single video - preparing download...")
-            self.log_status("🎬 Detected single video URL")
-        
-        # Switch to abort button
-        self.download_button.pack_forget()
-        self.abort_button.pack(pady=10)
-        
-        self.progress_bar.set(0)
-        # Reset progress tracking for new download
-        self._last_logged_progress = 0
-        self._last_logged_filename = ""
-        self.log_status("🚀 Starting download...")
-        
-        # Start download in separate thread
-        self.download_thread = threading.Thread(target=self.download_worker, args=(url,))
-        self.download_thread.daemon = True
-        self.download_thread.start()
+        return
 
     def download_worker(self, url):
-        """Worker thread for download"""
-        try:
-            # Auto-detect if this is a playlist
-            is_playlist = self.is_playlist_url(url)
-            
-            # Show playlist counter if this is a playlist
-            if is_playlist:
-                # Get playlist info to show initial counter
-                try:
-                    import yt_dlp
-                    with yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True}) as ydl:
-                        playlist_info = ydl.extract_info(url, download=False)
-                        if playlist_info and 'entries' in playlist_info:
-                            valid_entries = [entry for entry in playlist_info['entries'] if entry is not None]
-                            total_videos = len(valid_entries)
-                            self.root.after(0, self.show_playlist_counter, total_videos)
-                except Exception as e:
-                    # If we can't get playlist info, still show counter with unknown count
-                    self.root.after(0, self.show_playlist_counter, "?")
-            
-            # Collect metadata options
-            metadata_options = {
-                key: var.get() for key, var in self.metadata_vars.items()
-            }
-            
-            self.downloader.download(
-                url=url,
-                output_path=self.output_var.get(),
-                is_audio=self.format_var.get() == "audio",
-                is_playlist=is_playlist,
-                metadata_options=metadata_options,
-                progress_callback=self.update_progress
-            )
-            
-            # Update UI on completion
-            self.root.after(0, self.download_completed, True, "Download completed successfully!")
-            
-        except Exception as e:
-            # Update UI on error
-            self.root.after(0, self.download_completed, False, f"Download failed: {str(e)}")
+        return
 
     def download_completed(self, success, message):
-        """Handle download completion"""
-        # Hide playlist/status counter
-        self.hide_playlist_counter()
-        
-        # Check for error summary
-        error_summary = self.downloader.get_error_summary()
-        
-        if success:
-            if error_summary:
-                self.progress_text.configure(text="⚠️ Download completed with issues")
-                self.log_status(f"⚠️ Download completed with issues: {error_summary}")
-                messagebox.showwarning("Completed with Issues", f"Download completed but some videos had issues:\n{error_summary}\n\nCheck the error report in the output folder for details.")
-            else:
-                self.progress_text.configure(text="✅ Download completed!")
-                self.log_status(f"✅ {message}")
-                messagebox.showinfo("Success", "Download completed successfully!")
-        else:
-            # Check if it was aborted
-            if "aborted" in message.lower():
-                self.progress_text.configure(text="⏹️ Download aborted")
-                self.log_status(f"⏹️ {message}")
-                messagebox.showinfo("Aborted", "Download was aborted by user")
-            else:
-                if error_summary:
-                    self.progress_text.configure(text="⚠️ Download completed with errors")
-                    self.log_status(f"⚠️ Download completed with errors: {error_summary}")
-                    messagebox.showwarning("Completed with Errors", f"Download completed but encountered errors:\n{error_summary}\n\nCheck the error report in the output folder for details.")
-                else:
-                    self.progress_text.configure(text="❌ Download failed")
-                    self.log_status(f"❌ {message}")
-                    messagebox.showerror("Error", message)
-        
-        # Switch back to download button
-        self.abort_button.pack_forget()
-        self.download_button.pack(pady=10)
-        self.progress_bar.set(0)
+        return
 
     def toggle_theme(self):
         """Toggle between dark and light themes"""
@@ -834,9 +602,15 @@ class ModernUI:
         """Set up signal handlers for graceful exit"""
         def signal_handler(signum, frame):
             """Handle SIGINT (Ctrl+C) and SIGTERM signals"""
-            if self.download_thread and self.download_thread.is_alive():
-                print("\n🛑 Download in progress. Aborting and cleaning up incomplete files...")
-                self.downloader.abort_download()
+            running = any(t.is_running for t in getattr(self, 'tasks', []))
+            if running:
+                print("\n🛑 Tasks in progress. Aborting all and cleaning up...")
+                for t in self.tasks:
+                    try:
+                        if t.is_running:
+                            t.abort()
+                    except Exception:
+                        pass
                 # Give a moment for cleanup to complete
                 import time
                 time.sleep(1)
@@ -870,10 +644,15 @@ class ModernUI:
         geometry = self.root.geometry()
         self.config.set("window_size", geometry)
         
-        if self.download_thread and self.download_thread.is_alive():
-            if messagebox.askokcancel("Quit", "Download in progress. Are you sure you want to quit?\n\nIncomplete files will be cleaned up automatically."):
-                # Abort the download gracefully
-                self.downloader.abort_download()
+        running = any(t.is_running for t in getattr(self, 'tasks', []))
+        if running:
+            if messagebox.askokcancel("Quit", "Tasks in progress. Quit and abort all?\n\nIncomplete files will be cleaned up automatically."):
+                for t in self.tasks:
+                    try:
+                        if t.is_running:
+                            t.abort()
+                    except Exception:
+                        pass
                 self.root.destroy()
         else:
             self.root.destroy()
@@ -888,8 +667,12 @@ class ModernUI:
         except KeyboardInterrupt:
             # This should be handled by the signal handler, but just in case
             print("\n👋 Exiting gracefully...")
-            if self.download_thread and self.download_thread.is_alive():
-                self.downloader.abort_download()
+            for t in getattr(self, 'tasks', []):
+                try:
+                    if t.is_running:
+                        t.abort()
+                except Exception:
+                    pass
             sys.exit(0)
     
     def show_ffmpeg_warning(self):
@@ -911,3 +694,307 @@ Installation Instructions:
 Downloads will still work but without advanced features."""
         
         messagebox.showwarning("FFmpeg Not Found", warning_text) 
+
+
+class TaskItem:
+    """Represents a single download task with its own controls, progress, and terminal"""
+    def __init__(self, ui: ModernUI, parent_frame, default_output: str):
+        self.ui = ui
+        self.frame = ctk.CTkFrame(parent_frame)
+        self.frame.pack(fill="x", pady=(0, 10))
+
+        # Per-task state
+        self.downloader = Downloader()
+        self.thread = None
+        self.is_running = False
+        self._aborted = False
+
+        # Header row with title and remove button
+        header = ctk.CTkFrame(self.frame, fg_color="transparent")
+        header.pack(fill="x", padx=10, pady=(10, 5))
+
+        self.title_label = ctk.CTkLabel(header, text="Task", font=ctk.CTkFont(size=13, weight="bold"))
+        self.title_label.pack(side="left")
+
+        header_btns = ctk.CTkFrame(header, fg_color="transparent")
+        header_btns.pack(side="right")
+
+        self.start_btn = ctk.CTkButton(header_btns, text="▶ Start", width=80, height=30, command=self.start)
+        self.start_btn.pack(side="left", padx=(0, 6))
+
+        self.abort_btn = ctk.CTkButton(header_btns, text="⏹ Abort", width=80, height=30,
+                                       fg_color=("red", "darkred"), hover_color=("darkred", "red"),
+                                       command=self.abort)
+        self.abort_btn.pack(side="left", padx=(0, 6))
+        self.abort_btn.configure(state="disabled")
+
+        remove_btn = ctk.CTkButton(header_btns, text="🗑 Remove", width=90, height=30,
+                                   fg_color=("gray70", "gray30"), hover_color=("gray60", "gray40"),
+                                   command=lambda: self.ui.remove_task(self))
+        remove_btn.pack(side="left")
+
+        # URL row
+        url_row = ctk.CTkFrame(self.frame, fg_color="transparent")
+        url_row.pack(fill="x", padx=10, pady=5)
+
+        url_label = ctk.CTkLabel(url_row, text="URL:")
+        url_label.pack(side="left", padx=(0, 8))
+
+        self.url_var = ctk.StringVar(value="")
+        self.url_entry = ctk.CTkEntry(url_row, textvariable=self.url_var, placeholder_text="https://www.youtube.com/watch?v=...", height=32)
+        self.url_entry.pack(side="left", fill="x", expand=True)
+
+        # Format row (per task)
+        fmt_row = ctk.CTkFrame(self.frame, fg_color="transparent")
+        fmt_row.pack(fill="x", padx=10, pady=5)
+
+        fmt_label = ctk.CTkLabel(fmt_row, text="Format:")
+        fmt_label.pack(side="left", padx=(0, 8))
+
+        self.format_var = ctk.StringVar(value=self.ui.format_var.get())
+        fmt_radios = ctk.CTkFrame(fmt_row, fg_color="transparent")
+        fmt_radios.pack(side="left")
+        audio_radio = ctk.CTkRadioButton(fmt_radios, text="🎵 Audio (MP3)", variable=self.format_var, value="audio")
+        video_radio = ctk.CTkRadioButton(fmt_radios, text="🎬 Video", variable=self.format_var, value="video")
+        audio_radio.pack(side="left", padx=(0, 12))
+        video_radio.pack(side="left")
+
+        # Output row
+        out_row = ctk.CTkFrame(self.frame, fg_color="transparent")
+        out_row.pack(fill="x", padx=10, pady=5)
+
+        out_label = ctk.CTkLabel(out_row, text="Output:")
+        out_label.pack(side="left", padx=(0, 8))
+
+        self.output_var = ctk.StringVar(value=default_output)
+        self.output_entry = ctk.CTkEntry(out_row, textvariable=self.output_var, height=32)
+        self.output_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        browse_btn = ctk.CTkButton(out_row, text="Browse", width=80, height=32, command=self._browse_output)
+        browse_btn.pack(side="left")
+
+        # Progress
+        prog_row = ctk.CTkFrame(self.frame, fg_color="transparent")
+        prog_row.pack(fill="x", padx=10, pady=(5, 5))
+
+        self.progress_bar = ctk.CTkProgressBar(prog_row)
+        self.progress_bar.pack(fill="x")
+        self.progress_bar.set(0)
+
+        self.progress_text = ctk.CTkLabel(self.frame, text="Waiting", font=ctk.CTkFont(size=12))
+        self.progress_text.pack(anchor="w", padx=10)
+
+        # Terminal / Status
+        self.status_text = ctk.CTkTextbox(self.frame, height=130, font=ctk.CTkFont(size=11, family="Consolas"))
+        self.status_text.pack(fill="x", padx=10, pady=(5, 6))
+
+        clear_btn = ctk.CTkButton(self.frame, text="Clear Log", width=100, height=28, command=self._clear_status)
+        clear_btn.pack(anchor="w", padx=10, pady=(0, 10))
+
+        # Internal tracking for throttled logging
+        self._last_logged_progress = 0
+        self._last_logged_filename = ""
+
+    def update_title(self, text: str):
+        self.title_label.configure(text=text)
+
+    def get_url(self) -> str:
+        return self.url_var.get().strip()
+
+    def _browse_output(self):
+        directory = filedialog.askdirectory(initialdir=self.output_var.get())
+        if directory:
+            self.output_var.set(directory)
+            # Also store as default for future tasks
+            self.ui._save_output_directory(directory)
+
+    def _clear_status(self):
+        try:
+            self.status_text.delete("0.0", "end")
+        except Exception:
+            pass
+
+    def log(self, message: str):
+        try:
+            self.status_text.insert("end", f"{message}\n")
+            self.status_text.see("end")
+            self.ui.root.update_idletasks()
+        except Exception:
+            pass
+
+    def start(self):
+        if self.is_running:
+            return
+        url = self.get_url()
+        if not url or not url.startswith(("http://", "https://")):
+            messagebox.showerror("Error", "Please enter a valid URL starting with http:// or https://")
+            return
+        output_dir = self.output_var.get().strip()
+        if not output_dir:
+            messagebox.showerror("Error", "Please choose an output directory")
+            return
+        if not os.path.exists(output_dir):
+            try:
+                os.makedirs(output_dir)
+            except Exception as e:
+                messagebox.showerror("Error", f"Cannot create output directory: {e}")
+                return
+
+        # Detect playlist for early feedback
+        is_playlist = self._is_playlist_url(url)
+        if is_playlist:
+            self.progress_text.configure(text="📑 Detected playlist - preparing...")
+            self.log("📑 Detected playlist URL - will download all videos")
+        else:
+            self.progress_text.configure(text="🎬 Detected single video - preparing...")
+            self.log("🎬 Detected single video URL")
+
+        # Build metadata options from global UI
+        metadata_options = {key: var.get() for key, var in self.ui.metadata_vars.items()}
+        is_audio = self.format_var.get() == "audio"
+
+        # Switch buttons
+        self.start_btn.configure(state="disabled")
+        self.abort_btn.configure(state="normal")
+        self.progress_bar.set(0)
+        self._last_logged_progress = 0
+        self._last_logged_filename = ""
+        self._aborted = False
+        self.log("🚀 Starting download...")
+
+        def worker():
+            try:
+                # Try to get quick playlist size for UX
+                if is_playlist:
+                    try:
+                        with yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True}) as ydl:
+                            info = ydl.extract_info(url, download=False)
+                            if info and 'entries' in info:
+                                total = len([e for e in info['entries'] if e is not None])
+                                self.ui.root.after(0, lambda: self.progress_text.configure(text=f"📋 Playlist: {total} videos"))
+                    except Exception:
+                        pass
+
+                self.downloader.download(
+                    url=url,
+                    output_path=output_dir,
+                    is_audio=is_audio,
+                    is_playlist=is_playlist,
+                    metadata_options=metadata_options,
+                    progress_callback=self._update_progress
+                )
+                self.ui.root.after(0, lambda: self._completed(True, "Download completed successfully!"))
+            except Exception as e:
+                # Normalize aborts vs errors
+                msg = str(e) if e is not None else ""
+                if (msg and 'aborted' in msg.lower()) or self._aborted or getattr(self.downloader, '_should_abort', False):
+                    self.ui.root.after(0, lambda: self._completed(False, "Download aborted by user"))
+                else:
+                    display = msg if msg else "Unknown error"
+                    self.ui.root.after(0, lambda: self._completed(False, f"Download failed: {display}"))
+
+        import yt_dlp  # local import to avoid top-level dependency if not needed elsewhere
+        self.thread = threading.Thread(target=worker, daemon=True)
+        self.is_running = True
+        self.thread.start()
+
+    def abort(self):
+        if self.is_running:
+            try:
+                self._aborted = True
+                self.downloader.abort_download()
+                self.log("🛑 Abort requested...")
+                self.progress_text.configure(text="⏹️ Aborting...")
+            except Exception:
+                pass
+
+    def destroy(self):
+        try:
+            self.frame.destroy()
+        except Exception:
+            pass
+
+    def _is_playlist_url(self, url: str) -> bool:
+        import re
+        patterns = [r'[?&]list=([^&]+)', r'playlist\?list=([^&]+)', r'watch\?v=[^&]+&list=([^&]+)']
+        if any(re.search(p, url) for p in patterns):
+            return True
+        if 'youtube.com/playlist' in url or 'youtube.com/watch?list=' in url:
+            return True
+        return False
+
+    def _update_progress(self, d):
+        try:
+            # Progress value
+            if d['status'] == 'downloading':
+                if d.get('total_bytes'):
+                    downloaded = d.get('downloaded_bytes', 0)
+                    total = d.get('total_bytes', 0)
+                    progress = (downloaded / total) if total > 0 else 0
+                else:
+                    progress_str = d.get('_percent_str', '0%').replace('%', '')
+                    try:
+                        progress = float(progress_str) / 100
+                    except ValueError:
+                        progress = 0
+                self.progress_bar.set(progress)
+
+                filename = os.path.basename(d.get('filename', '')).rsplit('.', 1)[0]
+                speed = d.get('speed', 0)
+                eta = d.get('eta', 0)
+                if speed and eta:
+                    speed_mb = speed / 1024 / 1024
+                    eta_str = f"{eta // 60}m {eta % 60}s" if eta > 60 else f"{eta}s"
+                    status_text = f"Downloading: {filename} ({speed_mb:.1f} MB/s, ETA: {eta_str})"
+                else:
+                    status_text = f"Downloading: {filename}"
+                self.progress_text.configure(text=status_text)
+
+                # Throttled logging
+                progress_percent = progress * 100
+                if (progress_percent - self._last_logged_progress >= 5.0 or filename != self._last_logged_filename):
+                    self.log(f"⏬ {status_text}")
+                    self._last_logged_progress = progress_percent
+                    self._last_logged_filename = filename
+
+            elif d['status'] == 'finished':
+                filename = os.path.basename(d.get('filename', '')).rsplit('.', 1)[0]
+                self.progress_text.configure(text=f"Processing: {filename}")
+                self.log(f"🔄 Processing: {filename}")
+                self._last_logged_progress = 0
+                self._last_logged_filename = ""
+
+            elif d['status'] == 'error':
+                error_msg = d.get('error', 'Unknown error')
+                self.progress_text.configure(text=f"Error: {error_msg}")
+                self.log(f"❌ Error: {error_msg}")
+        except Exception as e:
+            self.log(f"❌ Progress update error: {e}")
+
+    def _completed(self, success: bool, message: str):
+        error_summary = self.downloader.get_error_summary()
+        if success:
+            if error_summary:
+                self.progress_text.configure(text="⚠️ Completed with issues")
+                self.log(f"⚠️ Completed with issues: {error_summary}")
+                messagebox.showwarning("Completed with Issues", f"Download completed but some videos had issues:\n{error_summary}\n\nCheck the error report in the output folder for details.")
+            else:
+                self.progress_text.configure(text="✅ Completed")
+                self.log(f"✅ {message}")
+        else:
+            if "aborted" in message.lower():
+                self.progress_text.configure(text="⏹️ Aborted")
+                self.log(f"⏹️ {message}")
+            else:
+                if error_summary:
+                    self.progress_text.configure(text="⚠️ Completed with errors")
+                    self.log(f"⚠️ Completed with errors: {error_summary}")
+                else:
+                    self.progress_text.configure(text="❌ Failed")
+                    self.log(f"❌ {message}")
+                messagebox.showerror("Error", message)
+
+        # Restore buttons/state
+        self.abort_btn.configure(state="disabled")
+        self.start_btn.configure(state="normal")
+        self.is_running = False
