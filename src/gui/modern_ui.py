@@ -795,6 +795,7 @@ class TaskItem:
         self.thread = None
         self.is_running = False
         self._aborted = False
+        self._destroyed = False
 
         # Header row with title and remove button
         header = ctk.CTkFrame(self.frame, fg_color="transparent")
@@ -882,6 +883,15 @@ class TaskItem:
         self._last_logged_progress = 0
         self._last_logged_filename = ""
 
+    def _run_on_ui(self, fn):
+        """Schedule a callable to run on the Tk main thread safely."""
+        try:
+            if not self._is_alive():
+                return
+            self.ui.root.after(0, lambda: fn() if self._is_alive() else None)
+        except Exception:
+            pass
+
     def update_title(self, text: str):
         self.title_label.configure(text=text)
 
@@ -901,13 +911,34 @@ class TaskItem:
         except Exception:
             pass
 
-    def log(self, message: str):
+    def _is_alive(self) -> bool:
         try:
-            self.status_text.insert("end", f"{message}\n")
-            self.status_text.see("end")
-            self.ui.root.update_idletasks()
+            return (not self._destroyed) and self.frame.winfo_exists()
         except Exception:
-            pass
+            return False
+
+    def _set_progress_text_safe(self, text: str):
+        if not self._is_alive():
+            return
+        def _apply():
+            try:
+                if self._is_alive():
+                    self.progress_text.configure(text=text)
+            except Exception:
+                pass
+        self._run_on_ui(_apply)
+
+    def log(self, message: str):
+        if not self._is_alive():
+            return
+        def _append():
+            try:
+                if self._is_alive():
+                    self.status_text.insert("end", f"{message}\n")
+                    self.status_text.see("end")
+            except Exception:
+                pass
+        self._run_on_ui(_append)
 
     def start(self):
         if self.is_running:
@@ -958,7 +989,7 @@ class TaskItem:
                             info = ydl.extract_info(url, download=False)
                             if info and 'entries' in info:
                                 total = len([e for e in info['entries'] if e is not None])
-                                self.ui.root.after(0, lambda: self.progress_text.configure(text=f"📋 Playlist: {total} videos"))
+                                self.ui.root.after(0, lambda: self._set_progress_text_safe(f"📋 Playlist: {total} videos"))
                     except Exception:
                         pass
 
@@ -991,12 +1022,13 @@ class TaskItem:
                 self._aborted = True
                 self.downloader.abort_download()
                 self.log("🛑 Abort requested...")
-                self.progress_text.configure(text="⏹️ Aborting...")
+                self._set_progress_text_safe("⏹️ Aborting...")
             except Exception:
                 pass
 
     def destroy(self):
         try:
+            self._destroyed = True
             self.frame.destroy()
         except Exception:
             pass
@@ -1011,9 +1043,11 @@ class TaskItem:
         return False
 
     def _update_progress(self, d):
+        if not self._is_alive():
+            return
         try:
-            # Progress value
             if d['status'] == 'downloading':
+                # Compute progress safely off the UI thread
                 if d.get('total_bytes'):
                     downloaded = d.get('downloaded_bytes', 0)
                     total = d.get('total_bytes', 0)
@@ -1024,7 +1058,6 @@ class TaskItem:
                         progress = float(progress_str) / 100
                     except ValueError:
                         progress = 0
-                self.progress_bar.set(progress)
 
                 filename = os.path.basename(d.get('filename', '')).rsplit('.', 1)[0]
                 speed = d.get('speed', 0)
@@ -1035,7 +1068,10 @@ class TaskItem:
                     status_text = f"Downloading: {filename} ({speed_mb:.1f} MB/s, ETA: {eta_str})"
                 else:
                     status_text = f"Downloading: {filename}"
-                self.progress_text.configure(text=status_text)
+
+                # Apply UI updates on main thread
+                self._run_on_ui(lambda: self.progress_bar.set(progress))
+                self._set_progress_text_safe(status_text)
 
                 # Throttled logging
                 progress_percent = progress * 100
@@ -1046,42 +1082,57 @@ class TaskItem:
 
             elif d['status'] == 'finished':
                 filename = os.path.basename(d.get('filename', '')).rsplit('.', 1)[0]
-                self.progress_text.configure(text=f"Processing: {filename}")
+                self._set_progress_text_safe(f"Processing: {filename}")
                 self.log(f"🔄 Processing: {filename}")
                 self._last_logged_progress = 0
                 self._last_logged_filename = ""
 
             elif d['status'] == 'error':
                 error_msg = d.get('error', 'Unknown error')
-                self.progress_text.configure(text=f"Error: {error_msg}")
+                self._set_progress_text_safe(f"Error: {error_msg}")
                 self.log(f"❌ Error: {error_msg}")
         except Exception as e:
             self.log(f"❌ Progress update error: {e}")
 
     def _completed(self, success: bool, message: str):
-        error_summary = self.downloader.get_error_summary()
-        if success:
-            if error_summary:
-                self.progress_text.configure(text="⚠️ Completed with issues")
-                self.log(f"⚠️ Completed with issues: {error_summary}")
-                messagebox.showwarning("Completed with Issues", f"Download completed but some videos had issues:\n{error_summary}\n\nCheck the error report in the output folder for details.")
-            else:
-                self.progress_text.configure(text="✅ Completed")
-                self.log(f"✅ {message}")
-        else:
-            if "aborted" in message.lower():
-                self.progress_text.configure(text="⏹️ Aborted")
-                self.log(f"⏹️ {message}")
-            else:
+        if not self._is_alive():
+            return
+        try:
+            error_summary = self.downloader.get_error_summary()
+            if success:
                 if error_summary:
-                    self.progress_text.configure(text="⚠️ Completed with errors")
-                    self.log(f"⚠️ Completed with errors: {error_summary}")
+                    self._set_progress_text_safe("⚠️ Completed with issues")
+                    self.log(f"⚠️ Completed with issues: {error_summary}")
+                    try:
+                        messagebox.showwarning("Completed with Issues", f"Download completed but some videos had issues:\n{error_summary}\n\nCheck the error report in the output folder for details.")
+                    except Exception:
+                        pass
                 else:
-                    self.progress_text.configure(text="❌ Failed")
-                    self.log(f"❌ {message}")
-                messagebox.showerror("Error", message)
+                    self._set_progress_text_safe("✅ Completed")
+                    self.log(f"✅ {message}")
+            else:
+                if "aborted" in message.lower():
+                    self._set_progress_text_safe("⏹️ Aborted")
+                    self.log(f"⏹️ {message}")
+                else:
+                    if error_summary:
+                        self._set_progress_text_safe("⚠️ Completed with errors")
+                        self.log(f"⚠️ Completed with errors: {error_summary}")
+                    else:
+                        self._set_progress_text_safe("❌ Failed")
+                        self.log(f"❌ {message}")
+                    try:
+                        messagebox.showerror("Error", message)
+                    except Exception:
+                        pass
 
-        # Restore buttons/state
-        self.abort_btn.configure(state="disabled")
-        self.start_btn.configure(state="normal")
-        self.is_running = False
+            # Restore buttons/state
+            try:
+                self.abort_btn.configure(state="disabled")
+                self.start_btn.configure(state="normal")
+            except Exception:
+                pass
+            self.is_running = False
+        except Exception:
+            # If anything fails during completion (likely due to destroyed widgets), just exit quietly
+            pass
