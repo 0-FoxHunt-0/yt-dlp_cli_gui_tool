@@ -268,13 +268,21 @@ Verify installation: ffmpeg -version
             self._playlist_total_videos = total_videos
             logging.info(f"Playlist detected: {playlist_title} with {total_videos} videos")
 
-        # Handle playlist folder creation
+        # Handle playlist folder creation and extract playlist title for metadata
+        playlist_title_for_metadata = None
         if is_playlist:
             try:
                 # Get playlist info to create folder
                 with yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True}) as temp_ydl:
                     playlist_info = temp_ydl.extract_info(url, download=False)
                     playlist_title = playlist_info.get('title', 'Unknown_Playlist')
+
+                    # Log the playlist title being used (from YouTube's official response)
+                    logging.info(f"Playlist title from YouTube: '{playlist_title}'")
+
+                    # Store original title for metadata (before sanitization)
+                    # This is the exact playlist name from YouTube's API response
+                    playlist_title_for_metadata = playlist_title
                     # Sanitize playlist title for folder name
                     import re
                     playlist_title = re.sub(r'[<>:"/\\|?*]', '_', playlist_title)
@@ -317,6 +325,7 @@ Verify installation: ffmpeg -version
             if metadata_options.get('embed_metadata', True) and self.ffmpeg_available:
                 options['postprocessors'].append({
                     'key': 'FFmpegMetadata',
+                    'add_metadata': True,
                 })
             
             # Add audio normalization postprocessor for video
@@ -325,6 +334,21 @@ Verify installation: ffmpeg -version
                     'key': 'FFmpegVideoConvertor',
                     'preferedformat': 'mp4',
                 })
+
+            # Handle playlist album override for video files
+            if metadata_options.get('playlist_album_override', False) and playlist_title_for_metadata:
+                # Add custom metadata args to FFmpeg for playlist album override
+                if 'postprocessor_args' not in options:
+                    options['postprocessor_args'] = {}
+                if 'ffmpeg' not in options['postprocessor_args']:
+                    options['postprocessor_args']['ffmpeg'] = []
+
+                # Add album metadata to FFmpeg args
+                album_args = [
+                    '-metadata', f'album={playlist_title_for_metadata}',
+                ]
+                options['postprocessor_args']['ffmpeg'].extend(album_args)
+                logging.info(f"Playlist album override: Using playlist name '{playlist_title_for_metadata}' as album metadata")
         else:
             # Enforce MP3 output: require FFmpeg, otherwise fail fast per requirement
             if not self.ffmpeg_available:
@@ -365,6 +389,7 @@ Verify installation: ffmpeg -version
                 },
                 {
                     'key': 'FFmpegMetadata',
+                    'add_metadata': True,
                 }
             ]
             
@@ -373,6 +398,21 @@ Verify installation: ffmpeg -version
                 options['postprocessors'] = [pp for pp in options['postprocessors'] if pp.get('key') != 'EmbedThumbnail']
             if not metadata_options.get('embed_metadata', True):
                 options['postprocessors'] = [pp for pp in options['postprocessors'] if pp.get('key') != 'FFmpegMetadata']
+
+            # Handle playlist album override
+            if metadata_options.get('playlist_album_override', False) and playlist_title_for_metadata:
+                # Add custom metadata args to FFmpeg for playlist album override
+                if 'postprocessor_args' not in options:
+                    options['postprocessor_args'] = {}
+                if 'ffmpeg' not in options['postprocessor_args']:
+                    options['postprocessor_args']['ffmpeg'] = []
+
+                # Add album metadata to FFmpeg args
+                album_args = [
+                    '-metadata', f'album={playlist_title_for_metadata}',
+                ]
+                options['postprocessor_args']['ffmpeg'].extend(album_args)
+                logging.info(f"Playlist album override: Using playlist name '{playlist_title_for_metadata}' as album metadata")
 
         # Configure additional metadata options
         options['writedescription'] = metadata_options.get('write_description', False)

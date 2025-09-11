@@ -368,6 +368,7 @@ class ModernUI:
         col3_options = [
             ("write_info_json", "📋 Save Info JSON", False),
             ("embed_subs", "📝 Download Subtitles", False),
+            ("playlist_album_override", "📀 Use Playlist as Album", False),
         ]
         
         # Add performance note
