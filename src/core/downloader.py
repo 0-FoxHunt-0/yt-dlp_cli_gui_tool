@@ -7,6 +7,8 @@ import shutil
 import glob
 from datetime import datetime
 from pathlib import Path
+from src.utils.config import Config
+from src.utils.log_cleaner import cleanup_logs
 
 
 class Downloader:
@@ -15,11 +17,27 @@ class Downloader:
         self.logs_dir = os.path.join(os.path.dirname(
             os.path.dirname(os.path.dirname(__file__))), 'logs')
         os.makedirs(self.logs_dir, exist_ok=True)
-        
+
+        # Load configuration for log cleaning settings
+        self.config = Config()
+
+        # Clean up old logs before setting up new logging
+        cleanup_result = None
+        if self.config.get('auto_clear_logs', True):
+            max_logs_to_keep = self.config.get('max_logs_to_keep', 5)
+            cleanup_result = cleanup_logs(
+                self.logs_dir,
+                max_logs_to_keep=max_logs_to_keep,
+                exclude_current=False  # We'll create the new log after cleanup
+            )
+            if cleanup_result['cleaned_count'] > 0:
+                # Use print instead of logging since logging isn't set up yet
+                print(f"Log cleanup: {cleanup_result['message']}")
+
         # Download control
         self._should_abort = False
         self._current_ydl = None
-        
+
         # Track active downloads for cleanup
         self._active_download_files = set()
         self._output_directory = None
@@ -40,7 +58,14 @@ class Downloader:
             level=logging.DEBUG,
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
-        
+
+        # Log the cleanup result now that logging is configured
+        if cleanup_result:
+            if cleanup_result['cleaned_count'] > 0:
+                logging.info(f"Log cleanup completed: {cleanup_result['message']}")
+            else:
+                logging.info(f"Log cleanup: {cleanup_result.get('message', 'No cleanup needed')}")
+
         # Check if FFmpeg is available
         self.ffmpeg_available = self._check_ffmpeg()
 
@@ -67,7 +92,7 @@ class Downloader:
             'nopostoverwrites': True,
             'writethumbnail': True,  # Always download thumbnails
             'convertthumbnails': 'jpg',  # Always convert to jpg
-            'retries': 3,  # Reduced retries for faster failure recovery
+            'retries': 5,  # Match alias: increase retries for robustness
             'fragment_retries': 5,  # Retries for individual fragments
             'progress_hooks': [],
             'outtmpl': '%(title)s.%(ext)s',
@@ -76,6 +101,8 @@ class Downloader:
             'no_warnings': True,
             'clean_infojson': True,
             'ignoreerrors': True,  # Skip unavailable videos
+            'abort_on_error': False,  # --no-abort-on-error equivalent
+            'skip_unavailable_fragments': True,  # Skip missing HLS/DASH fragments
             'continue_dl': True,   # Continue after errors
             'concurrent_fragments': 8,  # More parallel fragments for speed
             'http_chunk_size': 20971520,  # 20MB chunks for even better speed
@@ -83,6 +110,14 @@ class Downloader:
             'no_check_certificate': False,  # Keep security but optimize
             'geo_bypass': True,  # Bypass geo-restrictions faster
             'prefer_free_formats': False,  # Don't prefer free formats if quality is better elsewhere
+            # Prefer the web client to avoid TV/ios restrictions causing "not available on this app"
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['web'],
+                    # prefer_mpeg: encourage m4a/mp4 where available for more stable audio
+                    'prefer_mpeg': ['True']
+                }
+            },
         }
         
         # Track skipped/failed videos for reporting
@@ -255,7 +290,8 @@ Verify installation: ffmpeg -version
             options.pop('audioquality', None)
             
             # Use -x style extract-audio to MP3 and ensure final extension is mp3
-            options['format'] = 'bestaudio/best'  # Prefer formats that need less conversion
+            # Prefer m4a where available to avoid flaky HLS (webm) fragments
+            options['format'] = 'bestaudio[ext=m4a]/bestaudio/best'
             options['extractaudio'] = True       # yt-dlp -x
             options['audioformat'] = 'mp3'       # --audio-format mp3
             options['audioquality'] = '0'        # --audio-quality 0 (best)
@@ -388,6 +424,7 @@ Verify installation: ffmpeg -version
                 'restrictfilenames': True,  # Enable safe filenames
                 'concurrent_fragments': 16,  # More aggressive parallel fragments
                 'max_downloads': None,  # No download limit
+                'abort_on_error': False,  # ensure we keep going on playlist errors
                 'socket_timeout': 30,  # Faster timeout for unresponsive connections
             })
         else:

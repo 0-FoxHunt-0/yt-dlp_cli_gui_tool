@@ -3,9 +3,12 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 import sys
 import signal
+import os
 from src.core.downloader import Downloader
 from src.gui.terminal_ui import TerminalUI
 from src.gui.modern_ui import ModernUI
+from src.utils.config import Config
+from src.utils.log_cleaner import cleanup_logs
 
 
 class YouTubeDownloaderApp:
@@ -117,15 +120,44 @@ def setup_global_signal_handlers():
     def signal_handler(signum, frame):
         print("\n👋 Exiting gracefully...")
         sys.exit(0)
-    
+
     signal.signal(signal.SIGINT, signal_handler)
     if hasattr(signal, 'SIGTERM'):
         signal.signal(signal.SIGTERM, signal_handler)
 
+def setup_log_cleanup():
+    """Set up log cleanup on application startup"""
+    try:
+        config = Config()
+
+        if config.get('auto_clear_logs', True):
+            # Get logs directory path
+            logs_dir = os.path.join(os.path.dirname(__file__), 'logs')
+
+            # Ensure logs directory exists
+            os.makedirs(logs_dir, exist_ok=True)
+
+            max_logs_to_keep = config.get('max_logs_to_keep', 5)
+            cleanup_result = cleanup_logs(
+                logs_dir,
+                max_logs_to_keep=max_logs_to_keep,
+                exclude_current=False
+            )
+
+            if cleanup_result['cleaned_count'] > 0:
+                print(f"Log cleanup: {cleanup_result['message']}")
+            elif cleanup_result.get('total_files', 0) <= max_logs_to_keep:
+                print(f"Log cleanup: Already within limit ({cleanup_result.get('total_files', 0)} files)")
+    except Exception as e:
+        print(f"Warning: Log cleanup failed: {e}")
+
 def main():
     # Set up global signal handlers first
     setup_global_signal_handlers()
-    
+
+    # Set up log cleanup
+    setup_log_cleanup()
+
     parser = argparse.ArgumentParser(description='YouTube Downloader')
     parser.add_argument(
         '--url', help='YouTube URL to download directly (skips UI)')
