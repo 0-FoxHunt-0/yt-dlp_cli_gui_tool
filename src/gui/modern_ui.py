@@ -396,6 +396,95 @@ class ModernUI:
                 )
                 checkbox.pack(anchor="w", pady=1)
 
+        # Add button for updating existing files
+        update_existing_btn = ctk.CTkButton(
+            metadata_frame,
+            text="🔄 Update Existing Files Album",
+            font=ctk.CTkFont(size=11),
+            height=32,
+            command=self.update_existing_files_album
+        )
+        update_existing_btn.pack(anchor="w", padx=15, pady=(10, 15))
+
+        # Info text about the update existing files feature
+        update_info = ctk.CTkLabel(
+            metadata_frame,
+            text="💡 Use this to update album metadata on already downloaded playlist files",
+            font=ctk.CTkFont(size=10),
+            text_color=("gray50", "gray50"),
+            justify="left"
+        )
+        update_info.pack(anchor="w", padx=15, pady=(0, 15))
+
+    def update_existing_files_album(self):
+        """Update album metadata for existing playlist files"""
+        from tkinter import simpledialog, messagebox
+
+        # Check FFmpeg availability
+        if not self.downloader.ffmpeg_available:
+            messagebox.showerror("Error", "FFmpeg is required for metadata updates but is not available.\n\nPlease install FFmpeg and ensure it's on your PATH.")
+            return
+
+        # Ask for output directory
+        output_dir = filedialog.askdirectory(
+            title="Select Directory with Playlist Files",
+            initialdir=self.config.get("output_directory", self.config.get_default_output_directory())
+        )
+        if not output_dir:
+            return
+
+        # Ask for playlist name
+        playlist_name = simpledialog.askstring(
+            "Playlist Name",
+            "Enter the playlist name to use as album metadata:",
+            parent=self.root
+        )
+        if not playlist_name or not playlist_name.strip():
+            return
+
+        playlist_name = playlist_name.strip()
+
+        # Ask for format type
+        from tkinter import messagebox
+        format_choice = messagebox.askquestion(
+            "File Format",
+            "Are the files audio files? (Select 'No' for video files)",
+            icon='question'
+        )
+        is_audio = format_choice == 'yes'
+
+        # Confirm operation
+        file_types = "audio" if is_audio else "video"
+        confirm = messagebox.askyesno(
+            "Confirm Update",
+            f"This will update the album metadata of all {file_types} files in:\n{output_dir}\n\n"
+            f"Album name: '{playlist_name}'\n\n"
+            f"Continue?",
+            icon='warning'
+        )
+
+        if not confirm:
+            return
+
+        # Disable button during operation
+        # Note: We can't easily access the button reference here, so we'll proceed
+
+        def update_worker():
+            try:
+                self.downloader.update_existing_playlist_files_album(
+                    output_path=output_dir,
+                    playlist_title=playlist_name,
+                    is_audio=is_audio
+                )
+                messagebox.showinfo("Success", "Album metadata update completed!\n\nCheck the logs for details.")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to update album metadata:\n\n{str(e)}")
+
+        # Run in background thread
+        import threading
+        thread = threading.Thread(target=update_worker, daemon=True)
+        thread.start()
+
     def create_cookie_section(self):
         """Create cookie file section"""
         cookie_frame = ctk.CTkFrame(self.scrollable_frame)

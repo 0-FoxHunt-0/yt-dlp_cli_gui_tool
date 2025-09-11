@@ -594,6 +594,13 @@ Verify installation: ffmpeg -version
             # Final detection of skipped videos for accurate counting
             self._detect_skipped_videos()
 
+            # Process existing files if playlist album override is enabled
+            if is_playlist and metadata_options.get('playlist_album_override', False) and playlist_title_for_metadata:
+                try:
+                    self._update_existing_files_album_metadata(output_path, playlist_title_for_metadata, is_audio)
+                except Exception as e:
+                    logging.warning(f"Failed to update existing files album metadata: {e}")
+
             # Generate report if there were issues
             self._generate_error_report()
             return result
@@ -1331,6 +1338,87 @@ Verify installation: ffmpeg -version
 
         # If all fallbacks failed, raise the last error
         raise last_error
+
+    def _update_existing_files_album_metadata(self, output_path, playlist_title, is_audio):
+        """Update album metadata for existing files in the output directory"""
+        import subprocess
+        import glob
+
+        # Check if FFmpeg is available
+        if not self.ffmpeg_available:
+            logging.warning("FFmpeg not available - skipping existing files album metadata update")
+            return
+
+        logging.info(f"Updating album metadata for existing files to: '{playlist_title}'")
+
+        # Define file extensions to process
+        if is_audio:
+            extensions = ['*.mp3', '*.m4a', '*.flac', '*.ogg']
+        else:
+            extensions = ['*.mp4', '*.mkv', '*.webm', '*.avi']
+
+        updated_count = 0
+        total_files = 0
+
+        for ext in extensions:
+            pattern = os.path.join(output_path, ext)
+            files = glob.glob(pattern)
+
+            for file_path in files:
+                total_files += 1
+                try:
+                    # Use FFmpeg to update album metadata
+                    temp_file = file_path + '.temp'
+
+                    if is_audio:
+                        # For audio files, copy and update metadata
+                        cmd = [
+                            'ffmpeg', '-y', '-i', file_path,
+                            '-c', 'copy',
+                            '-metadata', f'album={playlist_title}',
+                            '-id3v2_version', '3',
+                            '-write_id3v1', '1',
+                            temp_file
+                        ]
+                    else:
+                        # For video files, copy and update metadata
+                        cmd = [
+                            'ffmpeg', '-y', '-i', file_path,
+                            '-c', 'copy',
+                            '-metadata', f'album={playlist_title}',
+                            temp_file
+                        ]
+
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+                    if result.returncode == 0:
+                        # Replace original file with updated one
+                        os.replace(temp_file, file_path)
+                        updated_count += 1
+                        logging.info(f"Updated album metadata for: {os.path.basename(file_path)}")
+                    else:
+                        logging.warning(f"Failed to update metadata for {os.path.basename(file_path)}: {result.stderr}")
+                        # Clean up temp file if it exists
+                        if os.path.exists(temp_file):
+                            os.remove(temp_file)
+
+                except subprocess.TimeoutExpired:
+                    logging.warning(f"Timeout updating metadata for {os.path.basename(file_path)}")
+                    if os.path.exists(temp_file):
+                        os.remove(temp_file)
+                except Exception as e:
+                    logging.warning(f"Error updating metadata for {os.path.basename(file_path)}: {e}")
+                    if os.path.exists(temp_file):
+                        os.remove(temp_file)
+
+        if total_files > 0:
+            logging.info(f"Album metadata update completed: {updated_count}/{total_files} files updated")
+        else:
+            logging.info("No existing media files found to update")
+
+    def update_existing_playlist_files_album(self, output_path, playlist_title, is_audio=True):
+        """Public method to update album metadata for existing playlist files"""
+        return self._update_existing_files_album_metadata(output_path, playlist_title, is_audio)
 
     def get_error_summary(self):
         """Get a summary of errors for UI display"""
