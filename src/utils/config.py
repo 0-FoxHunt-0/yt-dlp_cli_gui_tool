@@ -12,6 +12,7 @@ class Config:
             "window_size": "700x600",
             "output_directory": self._get_default_output_directory(),
             "default_format": "audio",
+            "cookie_file": "",  # Path to YouTube cookies file
             "auto_clear_logs": True,
             "max_logs_to_keep": 5,
             "download_history": True,

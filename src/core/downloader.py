@@ -110,12 +110,54 @@ class Downloader:
             'no_check_certificate': False,  # Keep security but optimize
             'geo_bypass': True,  # Bypass geo-restrictions faster
             'prefer_free_formats': False,  # Don't prefer free formats if quality is better elsewhere
-            # Prefer the web client to avoid TV/ios restrictions causing "not available on this app"
+            # Add proper headers to avoid mobile app detection
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Upgrade-Insecure-Requests': '1',
+                'DNT': '1',
+                'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                'Sec-Ch-Ua-Mobile': '?0',
+                'Sec-Ch-Ua-Platform': '"Windows"',
+            },
+            # Additional options to handle problematic connections
+            'sleep_interval_requests': 0.1,  # Small delay between requests
+            'sleep_interval': 0.1,  # Small delay between downloads
+            'max_sleep_interval': 1,  # Cap the sleep interval
+            'sleep_interval_subtitles': 0,  # No delay for subtitles
+            # Cookie handling to avoid detection - disabled by default to prevent errors
+            'cookiefile': None,  # Use cookies if available
+            'cookiesfrombrowser': None,  # Don't auto-load browser cookies to avoid permission errors
+            # Browser impersonation
+            'impersonate': None,  # Don't impersonate by default but have option ready
+            # Additional retry and timeout settings
+            'file_access_retries': 3,  # Retry file access issues
+            'extractor_retries': 3,  # Retry extraction failures
+            # Force format handling to avoid PO token issues
+            'format': 'best[height<=1080][ext=mp4]/best[ext=mp4]/best[height<=1080]/best',  # Prefer non-PO-token-required formats
+            # Additional YouTube-specific options
+            'youtube_include_dash_manifest': False,  # Skip DASH to avoid issues
+            'youtube_include_hls_manifest': False,  # Skip HLS to avoid issues
+            # Prefer cookies from installed browsers if available (helps PO token mints)
+            # Users can set cookiesfrombrowser in settings later if needed
+            # Force better format compatibility
+            'merge_output_format': 'mp4',  # Ensure consistent output format
+            'prefer_ffmpeg': True,  # Use FFmpeg for better format handling
+            # Comprehensive YouTube configuration to avoid "not available on this app" errors
             'extractor_args': {
                 'youtube': {
+                    # Use web client as primary to avoid PO token requirements
                     'player_client': ['web'],
-                    # prefer_mpeg: encourage m4a/mp4 where available for more stable audio
-                    'prefer_mpeg': ['True']
+                    'innertube_client': ['WEB'],
+                    # Additional bypass options
+                    'geo_bypass': True,
+                    'use_oauth': False,
+                    'use_cipher_signature': True,
                 }
             },
         }
@@ -193,10 +235,18 @@ Verify installation: ffmpeg -version
                  is_audio: bool = True,
                  is_playlist: bool = False,
                  metadata_options: dict = None,
-                 progress_callback: Optional[Callable] = None):
+                 progress_callback: Optional[Callable] = None,
+                 cookie_file: str = None):
 
         options = self.base_options.copy()
-        
+
+        # Use cookie file if provided
+        if cookie_file and os.path.exists(cookie_file):
+            options['cookiefile'] = cookie_file
+            logging.info(f"Using cookie file: {cookie_file}")
+        elif cookie_file:
+            logging.warning(f"Cookie file not found: {cookie_file}")
+
         # Default metadata options
         if metadata_options is None:
             metadata_options = {
@@ -442,31 +492,29 @@ Verify installation: ffmpeg -version
             self._output_directory = output_path
             self.skipped_videos = []
             self.failed_videos = []
-            
+
             # Clean up any existing incomplete files before starting
             self._cleanup_incomplete_files()
-            
-            with yt_dlp.YoutubeDL(options) as ydl:
-                self._current_ydl = ydl
-                self._should_abort = False
-                result = ydl.download([url])
-                
-                # Clean up thumbnail files after successful download (with small delay for postprocessors)
-                try:
-                    import time
-                    time.sleep(2)  # Give postprocessors time to finish
-                    cleanup_result = self._cleanup_incomplete_files(cleanup_type="post_processing")
-                    if cleanup_result["cleaned_count"] > 0:
-                        logging.info(f"Post-download cleanup completed: {cleanup_result['cleaned_count']} files removed")
-                except Exception as cleanup_error:
-                    logging.warning(f"Post-download cleanup failed: {cleanup_error}")
-                
-                # Final detection of skipped videos for accurate counting
-                self._detect_skipped_videos()
-                
-                # Generate report if there were issues
-                self._generate_error_report()
-                return result
+
+            # Try download with primary configuration
+            result = self._try_download_with_fallback(url, options, output_path)
+
+            # Clean up thumbnail files after successful download (with small delay for postprocessors)
+            try:
+                import time
+                time.sleep(2)  # Give postprocessors time to finish
+                cleanup_result = self._cleanup_incomplete_files(cleanup_type="post_processing")
+                if cleanup_result["cleaned_count"] > 0:
+                    logging.info(f"Post-download cleanup completed: {cleanup_result['cleaned_count']} files removed")
+            except Exception as cleanup_error:
+                logging.warning(f"Post-download cleanup failed: {cleanup_error}")
+
+            # Final detection of skipped videos for accurate counting
+            self._detect_skipped_videos()
+
+            # Generate report if there were issues
+            self._generate_error_report()
+            return result
                 
         except KeyboardInterrupt as e:
             # Handle abort specifically
@@ -620,24 +668,41 @@ Verify installation: ffmpeg -version
 
     def _progress_hook(self, callback: Callable):
         def hook(d):
-            # Check if download should be aborted
+            # Check if download should be aborted - do this FIRST and MORE FREQUENTLY
             if self._should_abort:
+                logging.info("Progress hook detected abort flag - stopping download")
                 # Use KeyboardInterrupt which yt-dlp respects and will stop the entire process
                 raise KeyboardInterrupt("Download aborted by user")
-            
+
             # Track active download files
             if d['status'] == 'downloading' and 'filename' in d:
                 self._active_download_files.add(d['filename'])
+
+                # Check for abort more frequently during active downloading
+                if self._should_abort:
+                    logging.info("Download abort detected during active download - stopping")
+                    raise KeyboardInterrupt("Download aborted by user")
+
             elif d['status'] == 'finished' and 'filename' in d:
                 # Remove from active downloads when finished
                 self._active_download_files.discard(d['filename'])
-                
+
+                # Check for abort after each completion
+                if self._should_abort:
+                    logging.info("Download abort detected after file completion - stopping")
+                    raise KeyboardInterrupt("Download aborted by user")
+
                 # Update playlist tracking for successful downloads
                 if self._is_playlist_download:
                     self._playlist_downloaded_videos += 1
                     logging.info(f"Playlist progress: {self._playlist_downloaded_videos}/{self._playlist_total_videos} videos downloaded")
-                    
+
             elif d['status'] == 'error':
+                # Check for abort even on errors
+                if self._should_abort:
+                    logging.info("Download abort detected on error - stopping")
+                    raise KeyboardInterrupt("Download aborted by user")
+
                 # Check if this is actually a "skip" due to archive, not a real error
                 error_msg = str(d.get('error', '')).lower()
                 if any(skip_phrase in error_msg for skip_phrase in ['already been recorded', 'already recorded', 'has already been downloaded']):
@@ -656,18 +721,23 @@ Verify installation: ffmpeg -version
                         'error': d.get('error', 'Unknown error')
                     }
                     self.failed_videos.append(error_info)
-                    
+
                     # Update playlist tracking for failed videos
                     if self._is_playlist_download:
                         self._playlist_failed_videos += 1
                         logging.warning(f"Playlist video failed: {error_info['title']}")
-                    
+
                     logging.warning(f"Video failed: {error_info}")
-            
+
             # Detect skipped videos periodically for both single videos and playlists
             if d.get('status') in ['downloading', 'finished']:
                 self._detect_skipped_videos()
-            
+
+                # Additional abort check after skipped video detection
+                if self._should_abort:
+                    logging.info("Download abort detected after skipped video check - stopping")
+                    raise KeyboardInterrupt("Download aborted by user")
+
             # Pass the original yt-dlp data to the callback
             # This allows the UI to handle formatting and reduces data transformation issues
             callback(d)
@@ -677,18 +747,42 @@ Verify installation: ffmpeg -version
     def abort_download(self):
         """Abort the current download"""
         self._should_abort = True
+        logging.info("Download abort requested by user")
+
         if self._current_ydl:
             try:
-                # Multiple approaches to force stop
-                self._current_ydl._downloader.interrupt()
-                # Also try to set the abort flag in yt-dlp
-                self._current_ydl._downloader.params['abort'] = True
-                # Force close any open connections
-                if hasattr(self._current_ydl._downloader, '_opener'):
-                    self._current_ydl._downloader._opener.close()
-            except:
-                pass
-        
+                # Try to interrupt the yt-dlp downloader more aggressively
+                if hasattr(self._current_ydl, '_downloader'):
+                    downloader = self._current_ydl._downloader
+                    # Try multiple interrupt methods
+                    if hasattr(downloader, 'interrupt'):
+                        try:
+                            downloader.interrupt()
+                            logging.info("yt-dlp downloader interrupted")
+                        except Exception as e:
+                            logging.warning(f"Failed to interrupt downloader: {e}")
+
+                    # Try to set abort flag in params
+                    if hasattr(downloader, 'params'):
+                        downloader.params['abort'] = True
+                        logging.info("Set abort flag in yt-dlp params")
+
+                    # Try to close any open connections
+                    if hasattr(downloader, '_opener'):
+                        try:
+                            downloader._opener.close()
+                            logging.info("Closed yt-dlp opener")
+                        except Exception as e:
+                            logging.warning(f"Failed to close opener: {e}")
+
+                # Also try direct KeyboardInterrupt on the yt-dlp instance
+                if hasattr(self._current_ydl, '_download_retcode'):
+                    self._current_ydl._download_retcode = 130  # SIGINT exit code
+                    logging.info("Set download retcode to indicate interruption")
+
+            except Exception as e:
+                logging.warning(f"Error during abort attempt: {e}")
+
         # Cleanup immediately when abort is called
         try:
             cleanup_result = self._cleanup_incomplete_files(cleanup_type="abort")
@@ -941,18 +1035,158 @@ Verify installation: ffmpeg -version
         except Exception as e:
             logging.warning(f"Failed to generate error report: {e}")
 
+    def _try_download_with_fallback(self, url, options, output_path):
+        """Try download with fallback configurations for "not available on this app" errors"""
+        fallback_configs = [
+            # Primary configuration (already in options)
+            {},
+            # Fallback 1: Force TV client (often works when web fails)
+            {
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['tv'],
+                        'innertube_client': ['TVHTML5_SIMPLY_EMBEDDED_PLAYER'],
+                        'skip': ['dash', 'hls'],
+                        'geo_bypass': True,
+                    }
+                }
+            },
+            # Fallback 2: Force iOS client with proper headers
+            {
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['ios'],
+                        'innertube_client': ['IOS'],
+                        'skip': ['dash', 'hls'],
+                        'geo_bypass': True,
+                    }
+                },
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-us,en;q=0.5',
+                    'Sec-Ch-Ua-Mobile': '?1',
+                    'Sec-Ch-Ua-Platform': '"iOS"',
+                }
+            },
+            # Fallback 3: Android client (no plugin dependency)
+            {
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['android'],
+                        'innertube_client': ['ANDROID'],
+                        'skip': ['dash', 'hls'],
+                        'geo_bypass': True,
+                    }
+                },
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-us,en;q=0.5',
+                    'Sec-Ch-Ua-Mobile': '?1',
+                    'Sec-Ch-Ua-Platform': '"Android"',
+                }
+            }
+        ]
+
+        last_error = None
+
+        for i, fallback_config in enumerate(fallback_configs):
+            try:
+                # Merge fallback config with base options
+                current_options = options.copy()
+                if fallback_config:
+                    # Deep merge the configurations
+                    for key, value in fallback_config.items():
+                        if key in current_options and isinstance(current_options[key], dict) and isinstance(value, dict):
+                            current_options[key].update(value)
+                        else:
+                            current_options[key] = value
+
+                if i > 0:
+                    client_type = fallback_config.get('extractor_args', {}).get('youtube', {}).get('player_client', ['unknown'])[0]
+                    logging.info(f"Trying fallback configuration {i} ({client_type} client) to bypass YouTube restrictions")
+
+                with yt_dlp.YoutubeDL(current_options) as ydl:
+                    self._current_ydl = ydl
+                    self._should_abort = False
+
+                    # Start a background thread to monitor abort status
+                    import threading
+                    import time
+
+                    def abort_monitor():
+                        """Monitor for abort requests and interrupt yt-dlp if needed"""
+                        while not self._should_abort:
+                            time.sleep(0.1)  # Check every 100ms
+                        # Abort was requested, try to interrupt yt-dlp
+                        try:
+                            if hasattr(ydl, '_downloader') and hasattr(ydl._downloader, 'interrupt'):
+                                ydl._downloader.interrupt()
+                                logging.info("yt-dlp interrupted by abort monitor")
+                        except Exception as e:
+                            logging.warning(f"Failed to interrupt yt-dlp from monitor: {e}")
+
+                    # Start the abort monitor thread
+                    monitor_thread = threading.Thread(target=abort_monitor, daemon=True)
+                    monitor_thread.start()
+
+                    try:
+                        result = ydl.download([url])
+                    finally:
+                        # Clean up monitor thread
+                        self._should_abort = True
+                        monitor_thread.join(timeout=1.0)
+
+                # If we get here, download succeeded
+                if i > 0:
+                    client_type = fallback_config.get('extractor_args', {}).get('youtube', {}).get('player_client', ['unknown'])[0]
+                    logging.info(f"✅ Download succeeded with fallback configuration {i} ({client_type} client)")
+                else:
+                    logging.info("✅ Download succeeded with primary configuration (web client)")
+                return result
+
+            except Exception as e:
+                error_msg = str(e)
+                last_error = e
+
+                # Check if this is a retryable error
+                retryable_errors = [
+                    "not available on this app",
+                    "po token",
+                    "gvs po token",
+                    "http error 403",
+                    "forbidden",
+                    "fragment 1 not found",
+                    "unable to download format"
+                ]
+
+                is_retryable = any(retry_phrase in error_msg.lower() for retry_phrase in retryable_errors)
+
+                if is_retryable and i < len(fallback_configs) - 1:
+                    logging.warning(f"Configuration {i} failed with retryable error: {error_msg[:100]}... Trying next fallback...")
+                    continue
+                else:
+                    # Non-retryable error or all fallbacks exhausted
+                    if is_retryable and i >= len(fallback_configs) - 1:
+                        logging.error("All fallback configurations failed with retryable errors")
+                    raise e
+
+        # If all fallbacks failed, raise the last error
+        raise last_error
+
     def get_error_summary(self):
         """Get a summary of errors for UI display"""
         failed_count = len(self.failed_videos)
         skipped_count = len(self.skipped_videos)
-        
+
         if failed_count == 0 and skipped_count == 0:
             return None
-            
+
         summary = []
         if failed_count > 0:
             summary.append(f"{failed_count} video(s) failed")
         if skipped_count > 0:
             summary.append(f"{skipped_count} video(s) skipped")
-            
+
         return ", ".join(summary)

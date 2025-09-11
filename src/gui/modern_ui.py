@@ -117,7 +117,10 @@ class ModernUI:
         
         # Metadata section
         self.create_metadata_section()
-        
+
+        # Cookie file section
+        self.create_cookie_section()
+
         # Tasks section (multi-task support)
         self.create_tasks_section()
 
@@ -389,6 +392,103 @@ class ModernUI:
                     state="disabled" if ffmpeg_disabled and key in ["embed_metadata", "embed_thumbnail", "embed_chapters"] else "normal"
                 )
                 checkbox.pack(anchor="w", pady=1)
+
+    def create_cookie_section(self):
+        """Create cookie file section"""
+        cookie_frame = ctk.CTkFrame(self.scrollable_frame)
+        cookie_frame.pack(fill="x", pady=(0, 15))
+
+        # Cookie label
+        cookie_label = ctk.CTkLabel(
+            cookie_frame,
+            text="Cookie File (Optional)",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        cookie_label.pack(anchor="w", padx=15, pady=(15, 10))
+
+        # Cookie file input row
+        cookie_row = ctk.CTkFrame(cookie_frame, fg_color="transparent")
+        cookie_row.pack(fill="x", padx=15, pady=(0, 10))
+
+        self.cookie_var = ctk.StringVar(value=self.config.get("cookie_file", ""))
+        self.cookie_entry = ctk.CTkEntry(
+            cookie_row,
+            textvariable=self.cookie_var,
+            placeholder_text="Path to YouTube cookies.txt file",
+            height=32
+        )
+        self.cookie_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        browse_cookie_btn = ctk.CTkButton(
+            cookie_row,
+            text="Browse",
+            width=80,
+            height=32,
+            command=self.browse_cookie_file
+        )
+        browse_cookie_btn.pack(side="left")
+
+        # Cookie info text
+        cookie_info = ctk.CTkLabel(
+            cookie_frame,
+            text="🎯 Use for age-restricted or region-blocked content.\n"
+                 "Export cookies from your browser or use a cookie extractor extension.",
+            font=ctk.CTkFont(size=10),
+            text_color=("gray50", "gray50"),
+            justify="left"
+        )
+        cookie_info.pack(anchor="w", padx=15, pady=(0, 15))
+
+        # Bind to save on change (with debouncing)
+        self.cookie_var.trace_add("write", self._on_cookie_file_changed)
+        self._cookie_save_after_id = None
+
+    def browse_cookie_file(self):
+        """Browse for cookie file"""
+        from tkinter import filedialog
+        file_path = filedialog.askopenfilename(
+            title="Select Cookie File",
+            filetypes=[("Cookie files", "*.txt"), ("All files", "*.*")]
+        )
+        if file_path:
+            self.cookie_var.set(file_path)
+            # Save immediately when browsed
+            self._save_cookie_file(file_path)
+
+    def _on_cookie_file_changed(self, *args):
+        """Handle cookie file changes with debouncing"""
+        if getattr(self, '_restoring_tasks', False):
+            return
+
+        try:
+            if self._cookie_save_after_id is not None:
+                try:
+                    self.root.after_cancel(self._cookie_save_after_id)
+                except Exception:
+                    pass
+
+            # Debounce saves to avoid excessive disk writes
+            self._cookie_save_after_id = self.root.after(500, self._save_cookie_file_delayed)
+        except Exception:
+            # Fallback to immediate save
+            self._save_cookie_file_delayed()
+
+    def _save_cookie_file(self, file_path):
+        """Save cookie file path to config"""
+        self.config.set("cookie_file", file_path)
+
+    def _save_cookie_file_delayed(self):
+        """Save cookie file path with validation"""
+        try:
+            file_path = self.cookie_var.get().strip()
+            if file_path and not os.path.exists(file_path):
+                # Don't save invalid paths, just warn
+                return
+            self._save_cookie_file(file_path)
+        except Exception:
+            pass
+        finally:
+            self._cookie_save_after_id = None
 
     # ===== Legacy single-output directory handlers (kept for config persistence) =====
     # These are used to persist a default output directory used to prefill new tasks
@@ -993,13 +1093,19 @@ class TaskItem:
                     except Exception:
                         pass
 
+                # Get cookie file from UI config
+                cookie_file = self.ui.config.get("cookie_file", "")
+                if cookie_file:
+                    cookie_file = cookie_file.strip()
+
                 self.downloader.download(
                     url=url,
                     output_path=output_dir,
                     is_audio=is_audio,
                     is_playlist=is_playlist,
                     metadata_options=metadata_options,
-                    progress_callback=self._update_progress
+                    progress_callback=self._update_progress,
+                    cookie_file=cookie_file if cookie_file else None
                 )
                 self.ui.root.after(0, lambda: self._completed(True, "Download completed successfully!"))
             except Exception as e:
@@ -1020,11 +1126,35 @@ class TaskItem:
         if self.is_running:
             try:
                 self._aborted = True
-                self.downloader.abort_download()
                 self.log("🛑 Abort requested...")
                 self._set_progress_text_safe("⏹️ Aborting...")
-            except Exception:
-                pass
+
+                # Call downloader abort first
+                self.downloader.abort_download()
+
+                # Wait a short time for graceful shutdown
+                import time
+                time.sleep(0.5)
+
+                # If thread is still alive after abort, try to force termination
+                if self.thread and self.thread.is_alive():
+                    self.log("⚠️ Thread still running, attempting force termination...")
+                    try:
+                        # Try to raise KeyboardInterrupt in the thread
+                        import ctypes
+                        if hasattr(ctypes, 'pythonapi'):
+                            thread_id = self.thread.ident
+                            if thread_id:
+                                ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                                    ctypes.c_long(thread_id),
+                                    ctypes.py_object(KeyboardInterrupt)
+                                )
+                                self.log("✅ Force termination signal sent to thread")
+                    except Exception as e:
+                        self.log(f"⚠️ Could not force terminate thread: {e}")
+
+            except Exception as e:
+                self.log(f"⚠️ Error during abort: {e}")
 
     def destroy(self):
         try:
