@@ -148,16 +148,24 @@ class Downloader:
             # Force better format compatibility
             'merge_output_format': 'mp4',  # Ensure consistent output format
             'prefer_ffmpeg': True,  # Use FFmpeg for better format handling
-            # Comprehensive YouTube configuration to avoid "not available on this app" errors
+            # Enhanced YouTube configuration to handle PO tokens and modern protection
             'extractor_args': {
                 'youtube': {
-                    # Use web client as primary to avoid PO token requirements
-                    'player_client': ['web'],
-                    'innertube_client': ['WEB'],
-                    # Additional bypass options
+                    # Use multiple clients for better compatibility and PO token support
+                    'player_client': ['web', 'tv', 'ios', 'android'],
+                    'innertube_client': ['WEB', 'TVHTML5_SIMPLY_EMBEDDED_PLAYER', 'IOS', 'ANDROID'],
+                    # PO token and protection bypass options
                     'geo_bypass': True,
                     'use_oauth': False,
                     'use_cipher_signature': True,
+                    # Disable problematic formats that require PO tokens
+                    'skip': ['dash', 'hls'],
+                    # Enable PO token generation
+                    'po_token': True,
+                    'gvs_token': True,
+                    # Additional protection bypass
+                    'visitor_data': None,
+                    'po_token_function': None,
                 }
             },
         }
@@ -199,6 +207,40 @@ class Downloader:
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
             logging.warning(f"FFmpeg not found: {e}")
             return False
+
+    def _get_user_friendly_error_message(self, error_msg):
+        """Convert technical YouTube errors to user-friendly messages with suggestions"""
+        error_msg_lower = error_msg.lower()
+
+        if "http error 403" in error_msg_lower or "forbidden" in error_msg_lower:
+            return ("YouTube is blocking the download (HTTP 403 Forbidden). "
+                   "This often happens due to YouTube's anti-bot measures. "
+                   "Try using browser cookies or wait a few hours before retrying.")
+
+        elif "po token" in error_msg_lower or "gvs po token" in error_msg_lower:
+            return ("YouTube's Proof of Origin (PO) token system is blocking access. "
+                   "This is a newer YouTube protection mechanism. "
+                   "Try using browser cookies from a logged-in session.")
+
+        elif "no request handlers configured" in error_msg_lower:
+            return ("YouTube's request handler configuration is missing. "
+                   "This may be due to yt-dlp version compatibility issues. "
+                   "Try updating yt-dlp or using browser cookies.")
+
+        elif "video unavailable" in error_msg_lower:
+            return ("The video is not available for download. "
+                   "This could mean the video was deleted, made private, or is region-locked.")
+
+        elif "not available on this app" in error_msg_lower:
+            return ("YouTube says this content is not available on this application. "
+                   "This is often due to geographic restrictions or content licensing.")
+
+        elif "unable to download format" in error_msg_lower:
+            return ("Could not find a suitable video format to download. "
+                   "The video may have restricted formats or YouTube may be blocking access.")
+
+        else:
+            return "YouTube access error occurred. Try using browser cookies or updating yt-dlp."
 
     def _get_ffmpeg_installation_instructions(self):
         """Get platform-specific FFmpeg installation instructions"""
@@ -591,20 +633,54 @@ Verify installation: ffmpeg -version
             # Generate report even on failure
             self._generate_error_report()
             
-            # Check if it's a critical error that should be re-raised
-            if ("aborted" in error_msg.lower() or 
-                "keyboardinterrupt" in error_msg.lower() or
-                "ffprobe" in error_msg.lower() or 
-                "ffmpeg" in error_msg.lower()):
-                if "ffmpeg" in error_msg.lower():
+            # Categorize and handle different types of errors
+            error_msg_lower = error_msg.lower()
+
+            # Critical errors that should be re-raised
+            if ("aborted" in error_msg_lower or
+                "keyboardinterrupt" in error_msg_lower or
+                "ffprobe" in error_msg_lower or
+                "ffmpeg" in error_msg_lower):
+                if "ffmpeg" in error_msg_lower:
                     instructions = self._get_ffmpeg_installation_instructions()
                     raise Exception(f"FFmpeg not found. {error_msg}\n\n{instructions}")
                 else:
                     raise Exception(error_msg)
+
+            # YouTube-specific errors that might be recoverable
+            elif any(error_type in error_msg_lower for error_type in [
+                "http error 403", "forbidden", "po token", "gvs po token",
+                "no request handlers configured", "video unavailable",
+                "not available on this app", "unable to download format"
+            ]):
+                user_friendly_msg = self._get_user_friendly_error_message(error_msg)
+                logging.error(f"YouTube access error: {user_friendly_msg}")
+                raise Exception(f"YouTube Access Error: {user_friendly_msg}\n\nOriginal error: {error_msg}")
+
+            # Network-related errors
+            elif any(error_type in error_msg_lower for error_type in [
+                "connection", "timeout", "network", "dns", "ssl"
+            ]):
+                logging.error(f"Network error: {error_msg}")
+                raise Exception(f"Network Error: Please check your internet connection and try again.\n\nOriginal error: {error_msg}")
+
+            # File system errors
+            elif any(error_type in error_msg_lower for error_type in [
+                "permission denied", "disk full", "no space", "readonly",
+                "file exists", "directory"
+            ]):
+                logging.error(f"File system error: {error_msg}")
+                raise Exception(f"File System Error: {error_msg}\n\nPlease check file permissions and available disk space.")
+
+            # Other errors - log but don't crash for playlist downloads
             else:
-                # Non-critical errors - log but don't crash
-                logging.warning(f"Download completed with errors: {error_msg}")
-                return None
+                if is_playlist:
+                    logging.warning(f"Download completed with non-critical errors: {error_msg}")
+                    return None
+                else:
+                    # For single videos, be more strict
+                    logging.error(f"Download failed: {error_msg}")
+                    raise Exception(f"Download failed: {error_msg}")
                 
         finally:
             self._current_ydl = None
@@ -671,38 +747,34 @@ Verify installation: ffmpeg -version
         """Detect videos that were skipped (already downloaded) by checking archive file"""
         if not self._output_directory:
             return
-            
+
         try:
             archive_file = os.path.join(self._output_directory, 'archive.txt')
             if os.path.exists(archive_file):
                 # Count lines in archive file to see how many videos were skipped
                 with open(archive_file, 'r', encoding='utf-8') as f:
                     archive_lines = f.readlines()
-                
+
                 # Calculate total videos in archive after this session
                 total_in_archive = len(archive_lines)
-                
+
                 # Calculate newly added videos (total in archive - initial count)
                 newly_added = total_in_archive - self._initial_archive_count
-                
-                # Calculate skipped videos based on archive analysis
+
+                # For playlists: the skipped count is already tracked in progress hooks
+                # We just need to verify it makes sense
                 if self._is_playlist_download:
-                    # For playlists: calculate skipped as total existing minus what we actually processed
-                    total_processed = self._playlist_downloaded_videos + self._playlist_failed_videos
-                    if newly_added > total_processed:
-                        # Some videos were already in archive (skipped)
-                        additional_skipped = newly_added - total_processed
-                        self._playlist_skipped_videos = max(0, additional_skipped)
-                        logging.info(f"Detected {self._playlist_skipped_videos} already downloaded videos (skipped)")
-                    elif newly_added < self._playlist_downloaded_videos:
-                        # Archive count mismatch - log warning
-                        logging.warning(f"Archive count mismatch: tracked {self._playlist_downloaded_videos} downloads but only {newly_added} added to archive")
+                    # The skipped videos are already counted by the progress hook
+                    # when it detects "already been recorded in archive" messages
+                    # This method is mainly for final verification and logging
+                    if self._playlist_skipped_videos > 0:
+                        logging.info(f"Confirmed {self._playlist_skipped_videos} videos were already downloaded (skipped)")
                 else:
-                    # For single videos: if archive didn't grow, it was likely skipped
-                    if newly_added == 0 and self._playlist_downloaded_videos == 0:
+                    # For single videos: if archive didn't grow and no download occurred, it was skipped
+                    if newly_added == 0 and self._playlist_downloaded_videos == 0 and self._playlist_failed_videos == 0:
                         self._playlist_skipped_videos = 1  # Single video was skipped
                         logging.info("Single video was already downloaded (skipped)")
-                    
+
         except Exception as e:
             logging.warning(f"Error detecting skipped videos: {e}")
 
@@ -1088,6 +1160,8 @@ Verify installation: ffmpeg -version
                         'innertube_client': ['TVHTML5_SIMPLY_EMBEDDED_PLAYER'],
                         'skip': ['dash', 'hls'],
                         'geo_bypass': True,
+                        'po_token': False,  # Disable PO token for TV client
+                        'use_oauth': False,
                     }
                 }
             },
@@ -1099,6 +1173,8 @@ Verify installation: ffmpeg -version
                         'innertube_client': ['IOS'],
                         'skip': ['dash', 'hls'],
                         'geo_bypass': True,
+                        'po_token': True,  # Enable PO token for iOS
+                        'use_oauth': False,
                     }
                 },
                 'http_headers': {
@@ -1117,6 +1193,8 @@ Verify installation: ffmpeg -version
                         'innertube_client': ['ANDROID'],
                         'skip': ['dash', 'hls'],
                         'geo_bypass': True,
+                        'po_token': True,  # Enable PO token for Android
+                        'use_oauth': False,
                     }
                 },
                 'http_headers': {
@@ -1125,6 +1203,39 @@ Verify installation: ffmpeg -version
                     'Accept-Language': 'en-us,en;q=0.5',
                     'Sec-Ch-Ua-Mobile': '?1',
                     'Sec-Ch-Ua-Platform': '"Android"',
+                }
+            },
+            # Fallback 4: Web client with minimal features (bypass SABR)
+            {
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['web'],
+                        'innertube_client': ['WEB'],
+                        'skip': ['dash', 'hls'],  # Skip problematic formats
+                        'geo_bypass': True,
+                        'po_token': False,  # Disable PO token
+                        'use_oauth': False,
+                        'use_cipher_signature': False,  # Disable cipher signature
+                    }
+                },
+                'format': 'best[height<=720][ext=mp4]/best[ext=mp4]/best[height<=720]/best',  # Prefer non-PO formats
+            },
+            # Fallback 5: Legacy web client for very old videos
+            {
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['web_music'],
+                        'innertube_client': ['WEB_MUSIC'],
+                        'skip': ['dash', 'hls'],
+                        'geo_bypass': True,
+                        'po_token': False,
+                        'use_oauth': False,
+                    }
+                },
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-us,en;q=0.5',
                 }
             }
         ]
@@ -1195,10 +1306,16 @@ Verify installation: ffmpeg -version
                     "not available on this app",
                     "po token",
                     "gvs po token",
+                    "no request handlers configured",
+                    "failed to fetch.*po token",
                     "http error 403",
                     "forbidden",
                     "fragment 1 not found",
-                    "unable to download format"
+                    "unable to download format",
+                    "some web client https formats have been skipped",
+                    "forcing sabr streaming",
+                    "missing a url",
+                    "video unavailable"
                 ]
 
                 is_retryable = any(retry_phrase in error_msg.lower() for retry_phrase in retryable_errors)

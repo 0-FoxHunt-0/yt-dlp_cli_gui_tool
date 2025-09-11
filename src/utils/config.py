@@ -18,7 +18,17 @@ class Config:
             "download_history": True,
             # Persist open tasks state
             "tasks_count": 1,
-            "task_urls": []
+            "task_urls": [],
+            # Metadata options
+            "embed_metadata": True,
+            "embed_thumbnail": True,
+            "embed_chapters": True,
+            "write_thumbnail": True,
+            "include_author": False,
+            "write_description": False,
+            "write_info_json": False,
+            "embed_subs": False,
+            "playlist_album_override": False
         }
         self.settings = self.load_settings()
         # Ensure default output directory exists

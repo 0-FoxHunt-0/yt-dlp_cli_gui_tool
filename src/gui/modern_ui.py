@@ -297,6 +297,7 @@ class ModernUI:
         
         # Radio buttons for format
         self.format_var = ctk.StringVar(value=self.config.get("default_format", "audio"))
+        self.format_var.trace_add("write", lambda *args: self.config.set("default_format", self.format_var.get()))
         
         format_radio_frame = ctk.CTkFrame(format_frame, fg_color="transparent")
         format_radio_frame.pack(fill="x", pady=(5, 0))
@@ -352,23 +353,23 @@ class ModernUI:
         # Column 1 options
         ffmpeg_disabled = not self.downloader.ffmpeg_available
         col1_options = [
-            ("embed_metadata", "📝 Embed Metadata", True and not ffmpeg_disabled),
-            ("embed_thumbnail", "🖼️ Embed Thumbnail", True and not ffmpeg_disabled),
-            ("embed_chapters", "📚 Embed Chapters", True and not ffmpeg_disabled),
+            ("embed_metadata", "📝 Embed Metadata", self._load_metadata_setting("embed_metadata", True and not ffmpeg_disabled)),
+            ("embed_thumbnail", "🖼️ Embed Thumbnail", self._load_metadata_setting("embed_thumbnail", True and not ffmpeg_disabled)),
+            ("embed_chapters", "📚 Embed Chapters", self._load_metadata_setting("embed_chapters", True and not ffmpeg_disabled)),
         ]
-        
+
         # Column 2 options
         col2_options = [
-            ("write_thumbnail", "💾 Save Thumbnail", True),
-            ("include_author", "👤 Include Author", False),
-            ("write_description", "📄 Save Description", False),
+            ("write_thumbnail", "💾 Save Thumbnail", self._load_metadata_setting("write_thumbnail", True)),
+            ("include_author", "👤 Include Author", self._load_metadata_setting("include_author", False)),
+            ("write_description", "📄 Save Description", self._load_metadata_setting("write_description", False)),
         ]
-        
+
         # Column 3 options
         col3_options = [
-            ("write_info_json", "📋 Save Info JSON", False),
-            ("embed_subs", "📝 Download Subtitles", False),
-            ("playlist_album_override", "📀 Use Playlist as Album", False),
+            ("write_info_json", "📋 Save Info JSON", self._load_metadata_setting("write_info_json", False)),
+            ("embed_subs", "📝 Download Subtitles", self._load_metadata_setting("embed_subs", False)),
+            ("playlist_album_override", "📀 Use Playlist as Album", self._load_metadata_setting("playlist_album_override", False)),
         ]
         
         # Add performance note
@@ -390,7 +391,8 @@ class ModernUI:
                     text=text,
                     variable=var,
                     font=ctk.CTkFont(size=11),
-                    state="disabled" if ffmpeg_disabled and key in ["embed_metadata", "embed_thumbnail", "embed_chapters"] else "normal"
+                    state="disabled" if ffmpeg_disabled and key in ["embed_metadata", "embed_thumbnail", "embed_chapters"] else "normal",
+                    command=lambda k=key, v=var: self._save_metadata_setting(k, v.get())
                 )
                 checkbox.pack(anchor="w", pady=1)
 
@@ -443,6 +445,21 @@ class ModernUI:
         # Bind to save on change (with debouncing)
         self.cookie_var.trace_add("write", self._on_cookie_file_changed)
         self._cookie_save_after_id = None
+
+    def _save_metadata_setting(self, key, value):
+        """Save a metadata setting to config"""
+        try:
+            self.config.set(key, value)
+        except Exception as e:
+            print(f"Error saving metadata setting {key}: {e}")
+
+    def _load_metadata_setting(self, key, default=False):
+        """Load a metadata setting from config"""
+        try:
+            return self.config.get(key, default)
+        except Exception as e:
+            print(f"Error loading metadata setting {key}: {e}")
+            return default
 
     def browse_cookie_file(self):
         """Browse for cookie file"""
