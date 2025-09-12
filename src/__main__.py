@@ -41,7 +41,7 @@ def main():
         # Direct download mode
         downloader = Downloader()
         try:
-            downloader.download(args.url, args.output, args.audio_only)
+            downloader.download(args.url, args.output, args.audio_only, force_playlist_redownload=False)
         except KeyboardInterrupt:
             print("\n🛑 Download interrupted. Cleaning up incomplete files...")
             downloader.abort_download()

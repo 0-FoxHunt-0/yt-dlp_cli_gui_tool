@@ -105,7 +105,8 @@ class YouTubeDownloaderApp:
                 url=url,
                 output_path=self.output_var.get(),
                 is_audio=self.format_var.get() == "audio",
-                progress_callback=self.update_progress
+                progress_callback=self.update_progress,
+                force_playlist_redownload=False  # Default to False for CLI
             )
             self.status_label['text'] = "Download completed!"
         except Exception as e:

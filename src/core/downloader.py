@@ -50,6 +50,11 @@ class Downloader:
         self._is_playlist_download = False
         self._initial_archive_count = 0  # Track initial archive count for accurate skipped detection
 
+        # Archive file backup tracking for forced re-downloads
+        self._restore_archive_after_download = False
+        self._backup_archive_path = None
+        self._original_archive_path = None
+
         # Configure logging
         log_file = os.path.join(
             self.logs_dir, f'yt-dlp_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
@@ -143,31 +148,18 @@ class Downloader:
             # Additional YouTube-specific options
             'youtube_include_dash_manifest': False,  # Skip DASH to avoid issues
             'youtube_include_hls_manifest': False,  # Skip HLS to avoid issues
+            # YouTube extractor configuration to help with PO token issues
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios', 'android', 'web'],  # Try different clients to avoid PO token issues
+                    'player_skip': ['js', 'configs'],  # Skip unnecessary JS/config loading
+                }
+            },
             # Prefer cookies from installed browsers if available (helps PO token mints)
             # Users can set cookiesfrombrowser in settings later if needed
             # Force better format compatibility
             'merge_output_format': 'mp4',  # Ensure consistent output format
             'prefer_ffmpeg': True,  # Use FFmpeg for better format handling
-            # Enhanced YouTube configuration to handle PO tokens and modern protection
-            'extractor_args': {
-                'youtube': {
-                    # Use multiple clients for better compatibility and PO token support
-                    'player_client': ['web', 'tv', 'ios', 'android'],
-                    'innertube_client': ['WEB', 'TVHTML5_SIMPLY_EMBEDDED_PLAYER', 'IOS', 'ANDROID'],
-                    # PO token and protection bypass options
-                    'geo_bypass': True,
-                    'use_oauth': False,
-                    'use_cipher_signature': True,
-                    # Disable problematic formats that require PO tokens
-                    'skip': ['dash', 'hls'],
-                    # Enable PO token generation
-                    'po_token': True,
-                    'gvs_token': True,
-                    # Additional protection bypass
-                    'visitor_data': None,
-                    'po_token_function': None,
-                }
-            },
         }
         
         # Track skipped/failed videos for reporting
@@ -278,7 +270,8 @@ Verify installation: ffmpeg -version
                  is_playlist: bool = False,
                  metadata_options: dict = None,
                  progress_callback: Optional[Callable] = None,
-                 cookie_file: str = None):
+                 cookie_file: str = None,
+                 force_playlist_redownload: bool = False):
 
         options = self.base_options.copy()
 
@@ -358,9 +351,11 @@ Verify installation: ffmpeg -version
                     {
                         'key': 'FFmpegThumbnailsConvertor',
                         'format': 'jpg',
+                        'when': 'before_dl',  # Convert thumbnails before download for better reliability
                     },
                     {
                         'key': 'EmbedThumbnail',
+                        'already_have_thumbnail': False,  # Force re-embedding even if thumbnail exists
                     }
                 ])
             
@@ -385,9 +380,10 @@ Verify installation: ffmpeg -version
                 if 'ffmpeg' not in options['postprocessor_args']:
                     options['postprocessor_args']['ffmpeg'] = []
 
-                # Add album metadata to FFmpeg args
+                # Force album override with explicit FFmpeg arguments
                 album_args = [
                     '-metadata', f'album={playlist_title_for_metadata}',
+                    '-metadata:s:v:0', f'album={playlist_title_for_metadata}',  # Force on video stream
                 ]
                 options['postprocessor_args']['ffmpeg'].extend(album_args)
                 logging.info(f"Playlist album override: Using playlist name '{playlist_title_for_metadata}' as album metadata")
@@ -449,9 +445,10 @@ Verify installation: ffmpeg -version
                 if 'ffmpeg' not in options['postprocessor_args']:
                     options['postprocessor_args']['ffmpeg'] = []
 
-                # Add album metadata to FFmpeg args
+                # Force album override with explicit FFmpeg arguments
                 album_args = [
                     '-metadata', f'album={playlist_title_for_metadata}',
+                    '-metadata:s:a:0', f'album={playlist_title_for_metadata}',  # Force on audio stream
                 ]
                 options['postprocessor_args']['ffmpeg'].extend(album_args)
                 logging.info(f"Playlist album override: Using playlist name '{playlist_title_for_metadata}' as album metadata")
@@ -531,18 +528,86 @@ Verify installation: ffmpeg -version
         # Ensure the archive behavior is enabled
         options['break_on_existing'] = False  # Continue checking the rest of playlist even if some videos exist
 
+        # For playlists, we want to be more aggressive about continuing downloads
+        if is_playlist:
+            # Ensure downloads are not skipped - override quiet mode for debugging
+            options['quiet'] = False
+            options['no_warnings'] = False
+            logging.info("Playlist mode: Enabled verbose output to debug download issues")
+
+            # Handle forced re-download option
+            if force_playlist_redownload:
+                # Temporarily move archive file to prevent skipping
+                archive_file = os.path.join(output_path, 'archive.txt')
+                backup_archive = os.path.join(output_path, 'archive.txt.backup')
+
+                if os.path.exists(archive_file):
+                    try:
+                        # Move archive file to backup location
+                        shutil.move(archive_file, backup_archive)
+                        logging.info(f"Moved existing archive file to backup ({backup_archive}) for forced re-download")
+                        logging.info("This ensures all playlist items will be re-evaluated for download")
+                        # Schedule restoration after download
+                        self._restore_archive_after_download = True
+                        self._backup_archive_path = backup_archive
+                        self._original_archive_path = archive_file
+                    except Exception as e:
+                        logging.warning(f"Could not backup archive file: {e}")
+                        # If we can't backup, just disable archive
+                        options['download_archive'] = None
+                        logging.info("Proceeding without archive file - all playlist items will be processed")
+                else:
+                    logging.info("No existing archive file found - proceeding with fresh download")
+                    options['download_archive'] = None
+            else:
+                # Keep archive file enabled for playlist downloads to prevent re-downloading existing videos
+                # This prevents unnecessary re-downloads and saves bandwidth/time
+                pass  # archive is already set above
+
+            # Add thumbnail quality fallback to prevent embedding failures
+            if metadata_options.get('embed_thumbnail', True) and self.ffmpeg_available:
+                # Prefer higher quality thumbnails to avoid embedding issues
+                options['writethumbnail'] = True
+                options['thumbnail_format'] = 'jpg'  # Force JPG format for better compatibility
+                logging.info("Thumbnail embedding enabled with enhanced quality settings")
+
+            # Force download of all items regardless of archive status
+            options['force_overwrites'] = False  # Don't overwrite existing files
+            options['nooverwrites'] = True  # Don't overwrite existing files
+            # Make sure we continue on any errors
+            options['ignoreerrors'] = True
+            options['continue_dl'] = True
+
         # Capture initial archive count for accurate skipped video detection
-        archive_file = os.path.join(output_path, 'archive.txt')
-        if os.path.exists(archive_file):
-            try:
-                with open(archive_file, 'r', encoding='utf-8') as f:
-                    self._initial_archive_count = len(f.readlines())
-                logging.info(f"Initial archive count: {self._initial_archive_count} videos")
-            except Exception as e:
-                logging.warning(f"Could not read initial archive: {e}")
+        # Only read archive for non-playlist downloads to avoid confusion
+        if not is_playlist:
+            archive_file = os.path.join(output_path, 'archive.txt')
+            if os.path.exists(archive_file):
+                try:
+                    with open(archive_file, 'r', encoding='utf-8') as f:
+                        self._initial_archive_count = len(f.readlines())
+                    logging.info(f"Initial archive count: {self._initial_archive_count} videos")
+                except Exception as e:
+                    logging.warning(f"Could not read initial archive: {e}")
+                    self._initial_archive_count = 0
+            else:
                 self._initial_archive_count = 0
         else:
-            self._initial_archive_count = 0
+            # For playlists, track initial archive count to accurately count skipped videos
+            archive_file = os.path.join(output_path, 'archive.txt')
+            if os.path.exists(archive_file):
+                try:
+                    with open(archive_file, 'r', encoding='utf-8') as f:
+                        self._initial_archive_count = sum(1 for line in f if line.strip())
+                    logging.info(f"Playlist mode: Found {self._initial_archive_count} previously downloaded videos in archive")
+                except Exception as e:
+                    logging.warning(f"Could not read archive file: {e}")
+                    self._initial_archive_count = 0
+            else:
+                self._initial_archive_count = 0
+                logging.info("Playlist mode: No existing archive file found - starting fresh")
+
+            logging.info(f"Playlist mode: Will download {self._playlist_total_videos} videos, skipping already downloaded ones using archive file")
 
         # Add playlist-specific options with aggressive resource usage
         if is_playlist:
@@ -690,23 +755,47 @@ Verify installation: ffmpeg -version
                     raise Exception(f"Download failed: {error_msg}")
                 
         finally:
+            # Restore archive file if it was backed up for forced re-download
+            if hasattr(self, '_restore_archive_after_download') and self._restore_archive_after_download:
+                try:
+                    if self._backup_archive_path and self._original_archive_path:
+                        if os.path.exists(self._backup_archive_path):
+                            shutil.move(self._backup_archive_path, self._original_archive_path)
+                            logging.info("Restored archive file from backup after forced re-download")
+                        # Clean up backup tracking
+                        self._restore_archive_after_download = False
+                        self._backup_archive_path = None
+                        self._original_archive_path = None
+                except Exception as e:
+                    logging.warning(f"Could not restore archive file from backup: {e}")
+
             self._current_ydl = None
 
     def _extract_playlist_info(self, url):
         """Extract playlist information to get total video count"""
         try:
             with yt_dlp.YoutubeDL({
-                'quiet': True, 
+                'quiet': True,
                 'extract_flat': True,
                 'ignoreerrors': True
             }) as ydl:
                 playlist_info = ydl.extract_info(url, download=False)
-                
+
                 if playlist_info and 'entries' in playlist_info:
                     # Count valid entries (filter out None entries)
-                    valid_entries = [entry for entry in playlist_info['entries'] if entry is not None]
+                    all_entries = playlist_info['entries']
+                    valid_entries = [entry for entry in all_entries if entry is not None]
+
+                    logging.info(f"Playlist extraction: {len(all_entries)} total entries, {len(valid_entries)} valid entries")
+
+                    # Log first few entries for debugging
+                    for i, entry in enumerate(valid_entries[:5]):
+                        if entry and isinstance(entry, dict):
+                            logging.info(f"Entry {i+1}: ID={entry.get('id', 'N/A')}, Title={entry.get('title', 'N/A')[:50]}...")
+
                     return len(valid_entries), playlist_info.get('title', 'Unknown Playlist')
                 else:
+                    logging.warning("No entries found in playlist info")
                     return 0, "Unknown Playlist"
         except Exception as e:
             logging.warning(f"Could not extract playlist info: {e}")
@@ -787,6 +876,11 @@ Verify installation: ffmpeg -version
 
     def _progress_hook(self, callback: Callable):
         def hook(d):
+            # Log all progress hook calls for debugging
+            status = d.get('status', 'unknown')
+            if self._is_playlist_download:
+                logging.debug(f"Progress hook called: status={status}, filename={d.get('filename', 'N/A')}")
+
             # Check if download should be aborted - do this FIRST and MORE FREQUENTLY
             if self._should_abort:
                 logging.info("Progress hook detected abort flag - stopping download")
@@ -796,6 +890,12 @@ Verify installation: ffmpeg -version
             # Track active download files
             if d['status'] == 'downloading' and 'filename' in d:
                 self._active_download_files.add(d['filename'])
+
+                # Log download start for debugging
+                if self._is_playlist_download and 'info_dict' in d:
+                    video_title = d['info_dict'].get('title', 'Unknown')
+                    video_id = d['info_dict'].get('id', 'Unknown')
+                    logging.info(f"Starting download: {video_title} (ID: {video_id})")
 
                 # Check for abort more frequently during active downloading
                 if self._should_abort:
@@ -814,7 +914,7 @@ Verify installation: ffmpeg -version
                 # Update playlist tracking for successful downloads
                 if self._is_playlist_download:
                     self._playlist_downloaded_videos += 1
-                    logging.info(f"Playlist progress: {self._playlist_downloaded_videos}/{self._playlist_total_videos} videos downloaded")
+                    logging.info(f"Playlist progress: {self._playlist_downloaded_videos}/{self._playlist_total_videos} videos downloaded - {os.path.basename(d['filename'])}")
 
             elif d['status'] == 'error':
                 # Check for abort even on errors
@@ -1159,90 +1259,28 @@ Verify installation: ffmpeg -version
         fallback_configs = [
             # Primary configuration (already in options)
             {},
-            # Fallback 1: Force TV client (often works when web fails)
+            # Fallback 1: Simple configuration without extractor_args
+            {},
+            # Fallback 2: Simple fallback with different user agent
             {
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['tv'],
-                        'innertube_client': ['TVHTML5_SIMPLY_EMBEDDED_PLAYER'],
-                        'skip': ['dash', 'hls'],
-                        'geo_bypass': True,
-                        'po_token': False,  # Disable PO token for TV client
-                        'use_oauth': False,
-                    }
-                }
-            },
-            # Fallback 2: Force iOS client with proper headers
-            {
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['ios'],
-                        'innertube_client': ['IOS'],
-                        'skip': ['dash', 'hls'],
-                        'geo_bypass': True,
-                        'po_token': True,  # Enable PO token for iOS
-                        'use_oauth': False,
-                    }
-                },
                 'http_headers': {
                     'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-us,en;q=0.5',
-                    'Sec-Ch-Ua-Mobile': '?1',
-                    'Sec-Ch-Ua-Platform': '"iOS"',
                 }
             },
-            # Fallback 3: Android client (no plugin dependency)
+            # Fallback 3: Another simple fallback
             {
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['android'],
-                        'innertube_client': ['ANDROID'],
-                        'skip': ['dash', 'hls'],
-                        'geo_bypass': True,
-                        'po_token': True,  # Enable PO token for Android
-                        'use_oauth': False,
-                    }
-                },
                 'http_headers': {
                     'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-us,en;q=0.5',
-                    'Sec-Ch-Ua-Mobile': '?1',
-                    'Sec-Ch-Ua-Platform': '"Android"',
                 }
             },
-            # Fallback 4: Web client with minimal features (bypass SABR)
+            # Fallback 4: Basic fallback with format preference
             {
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['web'],
-                        'innertube_client': ['WEB'],
-                        'skip': ['dash', 'hls'],  # Skip problematic formats
-                        'geo_bypass': True,
-                        'po_token': False,  # Disable PO token
-                        'use_oauth': False,
-                        'use_cipher_signature': False,  # Disable cipher signature
-                    }
-                },
-                'format': 'best[height<=720][ext=mp4]/best[ext=mp4]/best[height<=720]/best',  # Prefer non-PO formats
+                'format': 'best[height<=720][ext=mp4]/best[ext=mp4]/best[height<=720]/best',
             },
-            # Fallback 5: Legacy web client for very old videos
+            # Fallback 5: Legacy user agent fallback
             {
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['web_music'],
-                        'innertube_client': ['WEB_MUSIC'],
-                        'skip': ['dash', 'hls'],
-                        'geo_bypass': True,
-                        'po_token': False,
-                        'use_oauth': False,
-                    }
-                },
                 'http_headers': {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-us,en;q=0.5',
                 }
             }
         ]
@@ -1263,7 +1301,9 @@ Verify installation: ffmpeg -version
 
                 if i > 0:
                     client_type = fallback_config.get('extractor_args', {}).get('youtube', {}).get('player_client', ['unknown'])[0]
+                    extract_flat = fallback_config.get('extract_flat', False)
                     logging.info(f"Trying fallback configuration {i} ({client_type} client) to bypass YouTube restrictions")
+                    logging.info(f"Fallback config {i}: extract_flat={extract_flat}, has_user_agent={'User-Agent' in str(fallback_config)}")
 
                 with yt_dlp.YoutubeDL(current_options) as ydl:
                     self._current_ydl = ydl
@@ -1290,7 +1330,10 @@ Verify installation: ffmpeg -version
                     monitor_thread.start()
 
                     try:
+                        logging.info(f"Starting yt-dlp download with {len([url])} URLs")
+                        logging.info(f"Download options: quiet={current_options.get('quiet', 'N/A')}, download_archive={current_options.get('download_archive', 'N/A')}")
                         result = ydl.download([url])
+                        logging.info(f"yt-dlp download completed with result: {result}")
                     finally:
                         # Clean up monitor thread
                         self._should_abort = True
@@ -1368,7 +1411,9 @@ Verify installation: ffmpeg -version
                 total_files += 1
                 try:
                     # Use FFmpeg to update album metadata
-                    temp_file = file_path + '.temp'
+                    # Preserve original file extension for FFmpeg to recognize format
+                    file_name = os.path.basename(file_path)
+                    temp_file = os.path.join(os.path.dirname(file_path), f"temp_{file_name}")
 
                     if is_audio:
                         # For audio files, copy and update metadata
@@ -1376,6 +1421,7 @@ Verify installation: ffmpeg -version
                             'ffmpeg', '-y', '-i', file_path,
                             '-c', 'copy',
                             '-metadata', f'album={playlist_title}',
+                            '-metadata:s:a:0', f'album={playlist_title}',  # Force album on audio stream
                             '-id3v2_version', '3',
                             '-write_id3v1', '1',
                             temp_file
@@ -1386,10 +1432,22 @@ Verify installation: ffmpeg -version
                             'ffmpeg', '-y', '-i', file_path,
                             '-c', 'copy',
                             '-metadata', f'album={playlist_title}',
+                            '-metadata:s:v:0', f'album={playlist_title}',  # Force album on video stream
                             temp_file
                         ]
 
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                    # Handle encoding issues on Windows
+                    try:
+                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, encoding='utf-8')
+                    except UnicodeDecodeError:
+                        # Fallback to bytes and decode manually
+                        result = subprocess.run(cmd, capture_output=True, timeout=60)
+                        try:
+                            result.stdout = result.stdout.decode('utf-8', errors='replace')
+                            result.stderr = result.stderr.decode('utf-8', errors='replace')
+                        except:
+                            result.stdout = str(result.stdout)
+                            result.stderr = str(result.stderr)
 
                     if result.returncode == 0:
                         # Replace original file with updated one
@@ -1435,3 +1493,37 @@ Verify installation: ffmpeg -version
             summary.append(f"{skipped_count} video(s) skipped")
 
         return ", ".join(summary)
+
+    def inspect_archive_file(self, output_path: str):
+        """Inspect the contents of an archive file for debugging purposes"""
+        archive_file = os.path.join(output_path, 'archive.txt')
+
+        if not os.path.exists(archive_file):
+            return {
+                'exists': False,
+                'entry_count': 0,
+                'sample_entries': [],
+                'message': 'Archive file does not exist'
+            }
+
+        try:
+            with open(archive_file, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+
+            entry_count = len(lines)
+            sample_entries = lines[:10] if len(lines) > 10 else lines
+            sample_entries = [line.strip() for line in sample_entries]
+
+            return {
+                'exists': True,
+                'entry_count': entry_count,
+                'sample_entries': sample_entries,
+                'message': f'Archive file contains {entry_count} entries'
+            }
+        except Exception as e:
+            return {
+                'exists': True,
+                'entry_count': 0,
+                'sample_entries': [],
+                'message': f'Error reading archive file: {e}'
+            }

@@ -370,6 +370,7 @@ class ModernUI:
             ("write_info_json", "📋 Save Info JSON", self._load_metadata_setting("write_info_json", False)),
             ("embed_subs", "📝 Download Subtitles", self._load_metadata_setting("embed_subs", False)),
             ("playlist_album_override", "📀 Use Playlist as Album", self._load_metadata_setting("playlist_album_override", False)),
+            ("force_playlist_redownload", "🔄 Force Re-download All", self._load_metadata_setting("force_playlist_redownload", False)),
         ]
         
         # Add performance note
@@ -1212,7 +1213,8 @@ class TaskItem:
                     is_playlist=is_playlist,
                     metadata_options=metadata_options,
                     progress_callback=self._update_progress,
-                    cookie_file=cookie_file if cookie_file else None
+                    cookie_file=cookie_file if cookie_file else None,
+                    force_playlist_redownload=metadata_options.get('force_playlist_redownload', False)
                 )
                 self.ui.root.after(0, lambda: self._completed(True, "Download completed successfully!"))
             except Exception as e:

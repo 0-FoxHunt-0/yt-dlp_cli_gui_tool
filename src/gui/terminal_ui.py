@@ -49,6 +49,7 @@ class TerminalUI:
             ('embed_thumbnail', '🖼️ Embed Thumbnail', True),
             ('write_thumbnail', '💾 Save Thumbnail', True),
             ('include_author', '👤 Include Author', False),
+            ('force_playlist_redownload', '🔄 Force Re-download All', False),
         ]
         
         for key, text, default in metadata_options:
@@ -350,7 +351,8 @@ class TerminalUI:
                     is_audio=self.format_select.current_value == 'audio',
                     is_playlist=is_playlist,
                     metadata_options=metadata_options,
-                    progress_callback=self.update_progress
+                    progress_callback=self.update_progress,
+                    force_playlist_redownload=metadata_options.get('force_playlist_redownload', False)
                 )
                 # Check for error summary
                 error_summary = self.downloader.get_error_summary()
