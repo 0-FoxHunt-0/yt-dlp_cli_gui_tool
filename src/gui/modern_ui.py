@@ -112,8 +112,7 @@ class ModernUI:
 
     def create_scrollable_content(self):
         """Create all content within the scrollable frame"""
-        # Options section
-        self.create_options_section()
+        # Removed global Download Options section (per-task controls remain)
         
         # Metadata section
         self.create_metadata_section()
@@ -128,19 +127,42 @@ class ModernUI:
         """Restore number of tasks and their URLs from config"""
         try:
             self._restoring_tasks = True
-            urls = self.config.get("task_urls", []) or []
-            count = self.config.get("tasks_count", 1)
-            try:
-                count = int(count)
-            except Exception:
-                count = 1
-            if count < 1:
-                count = 1
+            tasks_data = self.config.get("tasks", []) or []
 
-            # Create tasks and set URLs
-            for i in range(count):
-                url_value = urls[i] if i < len(urls) else ""
-                self.add_task(url=url_value)
+            if tasks_data:
+                # New structured storage path
+                for item in tasks_data:
+                    try:
+                        url_value = (item.get("url") or "").strip()
+                        fmt_value = (item.get("format") or self.config.get("default_format", "audio")).strip()
+                        output_value = item.get("output") or self.config.get("output_directory", self.config.get_default_output_directory())
+                        task = self.add_task(url=url_value)
+                        try:
+                            task.format_var.set(fmt_value if fmt_value in ("audio", "video") else self.config.get("default_format", "audio"))
+                        except Exception:
+                            pass
+                        try:
+                            if output_value:
+                                task.output_var.set(output_value)
+                        except Exception:
+                            pass
+                    except Exception:
+                        # Fallback: add an empty task if malformed
+                        self.add_task(url="")
+            else:
+                # Backwards compatibility with older settings
+                urls = self.config.get("task_urls", []) or []
+                count = self.config.get("tasks_count", 1)
+                try:
+                    count = int(count)
+                except Exception:
+                    count = 1
+                if count < 1:
+                    count = 1
+
+                for i in range(count):
+                    url_value = urls[i] if i < len(urls) else ""
+                    self.add_task(url=url_value)
         finally:
             self._restoring_tasks = False
             # Persist once after restore to normalize values
@@ -150,6 +172,8 @@ class ModernUI:
         """Attach listeners to task inputs for persistence"""
         try:
             task.url_var.trace_add("write", lambda *args: self._on_task_url_changed())
+            task.output_var.trace_add("write", lambda *args: self._on_task_url_changed())
+            task.format_var.trace_add("write", lambda *args: self._on_task_url_changed())
         except Exception:
             pass
 
@@ -174,15 +198,27 @@ class ModernUI:
     def _persist_tasks_to_config(self):
         """Save current tasks count and URLs to config"""
         try:
-            urls = []
+            # Build structured tasks array
+            tasks_array = []
             for t in getattr(self, 'tasks', []):
                 try:
-                    urls.append(t.get_url())
+                    tasks_array.append({
+                        "url": t.get_url(),
+                        "format": t.format_var.get() if hasattr(t, 'format_var') else self.config.get("default_format", "audio"),
+                        "output": t.output_var.get() if hasattr(t, 'output_var') else self.config.get("output_directory", self.config.get_default_output_directory())
+                    })
                 except Exception:
-                    urls.append("")
-            # Batch update settings then save once
-            self.config.settings["task_urls"] = urls
-            self.config.settings["tasks_count"] = len(getattr(self, 'tasks', []))
+                    tasks_array.append({
+                        "url": "",
+                        "format": self.config.get("default_format", "audio"),
+                        "output": self.config.get("output_directory", self.config.get_default_output_directory())
+                    })
+
+            # Store new structure
+            self.config.settings["tasks"] = tasks_array
+            # Maintain backwards-compatible fields
+            self.config.settings["task_urls"] = [t.get("url", "") for t in tasks_array]
+            self.config.settings["tasks_count"] = len(tasks_array)
             self.config.save_settings()
         except Exception:
             pass
@@ -271,54 +307,7 @@ class ModernUI:
 
         # Initial tasks are restored from config in __init__
 
-    def create_options_section(self):
-        """Create download options section"""
-        options_frame = ctk.CTkFrame(self.scrollable_frame)
-        options_frame.pack(fill="x", pady=(0, 15))
-        
-        # Options label
-        options_label = ctk.CTkLabel(
-            options_frame, 
-            text="Download Options", 
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        options_label.pack(anchor="w", padx=15, pady=(15, 10))
-        
-        # Format selection
-        format_frame = ctk.CTkFrame(options_frame, fg_color="transparent")
-        format_frame.pack(fill="x", padx=15, pady=(0, 10))
-        
-        format_label = ctk.CTkLabel(
-            format_frame, 
-            text="Format:", 
-            font=ctk.CTkFont(size=12, weight="bold")
-        )
-        format_label.pack(anchor="w")
-        
-        # Radio buttons for format
-        self.format_var = ctk.StringVar(value=self.config.get("default_format", "audio"))
-        self.format_var.trace_add("write", lambda *args: self.config.set("default_format", self.format_var.get()))
-        
-        format_radio_frame = ctk.CTkFrame(format_frame, fg_color="transparent")
-        format_radio_frame.pack(fill="x", pady=(5, 0))
-        
-        audio_radio = ctk.CTkRadioButton(
-            format_radio_frame,
-            text="🎵 Audio Only (MP3)",
-            variable=self.format_var,
-            value="audio",
-            font=ctk.CTkFont(size=12)
-        )
-        audio_radio.pack(side="left", padx=(0, 20))
-        
-        video_radio = ctk.CTkRadioButton(
-            format_radio_frame,
-            text="🎬 Video + Audio",
-            variable=self.format_var,
-            value="video",
-            font=ctk.CTkFont(size=12)
-        )
-        video_radio.pack(side="left")
+    # Global Download Options section removed; per-task format controls are used instead.
 
     def create_metadata_section(self):
         """Create metadata options section"""
@@ -1047,7 +1036,8 @@ class TaskItem:
         fmt_label = ctk.CTkLabel(fmt_row, text="Format:")
         fmt_label.pack(side="left", padx=(0, 8))
 
-        self.format_var = ctk.StringVar(value=self.ui.format_var.get())
+        # Use default format from config (global section removed)
+        self.format_var = ctk.StringVar(value=self.ui.config.get("default_format", "audio"))
         fmt_radios = ctk.CTkFrame(fmt_row, fg_color="transparent")
         fmt_radios.pack(side="left")
         audio_radio = ctk.CTkRadioButton(fmt_radios, text="🎵 Audio (MP3)", variable=self.format_var, value="audio")

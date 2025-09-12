@@ -19,6 +19,8 @@ class Config:
             # Persist open tasks state
             "tasks_count": 1,
             "task_urls": [],
+            # New structured tasks (list of {url, format, output})
+            "tasks": [],
             # Metadata options
             "embed_metadata": True,
             "embed_thumbnail": True,

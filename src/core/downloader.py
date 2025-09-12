@@ -61,7 +61,8 @@ class Downloader:
         logging.basicConfig(
             filename=log_file,
             level=logging.DEBUG,
-            format='%(asctime)s - %(levelname)s - %(message)s'
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            encoding='utf-8'  # Ensure log file uses UTF-8 encoding
         )
 
         # Log the cleanup result now that logging is configured
@@ -74,6 +75,10 @@ class Downloader:
         # Check if FFmpeg is available
         self.ffmpeg_available = self._check_ffmpeg()
 
+        # Set environment variables to handle encoding issues
+        os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
+        os.environ.setdefault('LANG', 'C.UTF-8')
+
         # Log tool versions for diagnostics
         try:
             ytdlp_version = getattr(yt_dlp, "version", None)
@@ -84,9 +89,13 @@ class Downloader:
         except Exception:
             logging.info("yt-dlp version: unknown")
         try:
-            result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, timeout=5)
+            result = subprocess.run(['ffmpeg', '-version'], capture_output=True, timeout=5)
             if result.returncode == 0:
-                first_line = result.stdout.splitlines()[0] if result.stdout else "ffmpeg (version unknown)"
+                try:
+                    stdout_str = result.stdout.decode('utf-8', errors='replace')
+                    first_line = stdout_str.splitlines()[0] if stdout_str else "ffmpeg (version unknown)"
+                except:
+                    first_line = "ffmpeg (version unknown)"
                 logging.info(first_line)
         except Exception:
             pass
@@ -105,6 +114,9 @@ class Downloader:
             'quiet': True,
             'no_warnings': True,
             'clean_infojson': True,
+            # Encoding and compatibility options
+            'encoding': 'utf-8',  # Force UTF-8 encoding for yt-dlp output
+            'compat_opts': ['no-keep-subs'],  # Avoid subtitle encoding issues
             'ignoreerrors': True,  # Skip unavailable videos
             'abort_on_error': False,  # --no-abort-on-error equivalent
             'skip_unavailable_fragments': True,  # Skip missing HLS/DASH fragments
@@ -188,8 +200,8 @@ class Downloader:
         """Check if FFmpeg is available in the system PATH"""
         try:
             # Check if ffmpeg command is available
-            result = subprocess.run(['ffmpeg', '-version'], 
-                                  capture_output=True, text=True, timeout=5)
+            result = subprocess.run(['ffmpeg', '-version'],
+                                  capture_output=True, timeout=5)
             if result.returncode == 0:
                 logging.info("FFmpeg found and available")
                 return True
@@ -364,6 +376,30 @@ Verify installation: ffmpeg -version
                     'key': 'FFmpegMetadata',
                     'add_metadata': True,
                 })
+
+                # Add playlist name to metadata if this is a playlist download
+                if is_playlist and playlist_title_for_metadata:
+                    # Use postprocessor_args to pass custom FFmpeg metadata arguments
+                    if 'postprocessor_args' not in options:
+                        options['postprocessor_args'] = {}
+                    if 'ffmpeg' not in options['postprocessor_args']:
+                        options['postprocessor_args']['ffmpeg'] = []
+
+                    # Add playlist metadata using FFmpeg arguments
+                    # Note: album metadata will be handled by playlist_album_override if enabled
+                    playlist_args = [
+                        '-metadata', f'playlist={playlist_title_for_metadata}',
+                        '-metadata', f'collection={playlist_title_for_metadata}',
+                    ]
+
+                    # Only add album if playlist_album_override is not enabled
+                    if not metadata_options.get('playlist_album_override', False):
+                        playlist_args.extend([
+                            '-metadata', f'album={playlist_title_for_metadata}',
+                        ])
+
+                    options['postprocessor_args']['ffmpeg'].extend(playlist_args)
+                    logging.info(f"Will embed playlist name '{playlist_title_for_metadata}' in file metadata")
             
             # Add audio normalization postprocessor for video
             if self.ffmpeg_available:
@@ -430,6 +466,30 @@ Verify installation: ffmpeg -version
                     'add_metadata': True,
                 }
             ]
+
+            # Add playlist metadata for audio downloads
+            if is_playlist and playlist_title_for_metadata and metadata_options.get('embed_metadata', True):
+                # Use postprocessor_args to pass custom FFmpeg metadata arguments
+                if 'postprocessor_args' not in options:
+                    options['postprocessor_args'] = {}
+                if 'ffmpeg' not in options['postprocessor_args']:
+                    options['postprocessor_args']['ffmpeg'] = []
+
+                # Add playlist metadata using FFmpeg arguments
+                # Note: album metadata will be handled by playlist_album_override if enabled
+                playlist_args = [
+                    '-metadata', f'playlist={playlist_title_for_metadata}',
+                    '-metadata', f'collection={playlist_title_for_metadata}',
+                ]
+
+                # Only add album if playlist_album_override is not enabled
+                if not metadata_options.get('playlist_album_override', False):
+                    playlist_args.extend([
+                        '-metadata', f'album={playlist_title_for_metadata}',
+                    ])
+
+                options['postprocessor_args']['ffmpeg'].extend(playlist_args)
+                logging.info(f"Audio playlist mode: Will embed playlist name '{playlist_title_for_metadata}' in file metadata")
             
             # Allow toggling embedding via UI options while keeping MP3 enforcement
             if not metadata_options.get('embed_thumbnail', True):
@@ -1436,18 +1496,14 @@ Verify installation: ffmpeg -version
                             temp_file
                         ]
 
-                    # Handle encoding issues on Windows
+                    # Handle encoding issues properly
+                    result = subprocess.run(cmd, capture_output=True, timeout=60)
                     try:
-                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, encoding='utf-8')
-                    except UnicodeDecodeError:
-                        # Fallback to bytes and decode manually
-                        result = subprocess.run(cmd, capture_output=True, timeout=60)
-                        try:
-                            result.stdout = result.stdout.decode('utf-8', errors='replace')
-                            result.stderr = result.stderr.decode('utf-8', errors='replace')
-                        except:
-                            result.stdout = str(result.stdout)
-                            result.stderr = str(result.stderr)
+                        result.stdout = result.stdout.decode('utf-8', errors='replace')
+                        result.stderr = result.stderr.decode('utf-8', errors='replace')
+                    except:
+                        result.stdout = str(result.stdout)
+                        result.stderr = str(result.stderr)
 
                     if result.returncode == 0:
                         # Replace original file with updated one
