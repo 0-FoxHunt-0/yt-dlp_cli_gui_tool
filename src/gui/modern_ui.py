@@ -9,6 +9,7 @@ import difflib
 from tkinter import filedialog, messagebox
 from ..core.downloader import Downloader
 from ..utils.config import Config
+from .task_item import TaskItem
 
 # Try to import darkdetect, fallback to system detection
 try:
@@ -1510,115 +1511,6 @@ Downloads will still work but without advanced features."""
         
         messagebox.showwarning("FFmpeg Not Found", warning_text) 
 
-
-class TaskItem:
-    """Represents a single download task with its own controls, progress, and terminal"""
-    def __init__(self, ui: ModernUI, parent_frame, default_output: str):
-        self.ui = ui
-        self.frame = ctk.CTkFrame(parent_frame)
-        self.frame.pack(fill="x", pady=(0, 10))
-
-        # Per-task state
-        self.downloader = Downloader()
-        self.thread = None
-        self.is_running = False
-        self._aborted = False
-        self._destroyed = False
-        # M3U tracking for finalization
-        self._m3u_playlist_dir = None
-        self._m3u_playlist_title = None
-        # Playlist context for clearer logs
-        self._current_playlist_title = None
-        self._current_playlist_total = 0
-        self._is_playlist_task = False
-
-        # Header row with title and remove button
-        header = ctk.CTkFrame(self.frame, fg_color="transparent")
-        header.pack(fill="x", padx=10, pady=(10, 5))
-
-        self.title_label = ctk.CTkLabel(header, text="Task", font=ctk.CTkFont(size=13, weight="bold"))
-        self.title_label.pack(side="left")
-
-        header_btns = ctk.CTkFrame(header, fg_color="transparent")
-        header_btns.pack(side="right")
-
-        self.start_btn = ctk.CTkButton(header_btns, text="▶ Start", width=80, height=30, command=self.start)
-        self.start_btn.pack(side="left", padx=(0, 6))
-
-        self.abort_btn = ctk.CTkButton(header_btns, text="⏹ Abort", width=80, height=30,
-                                       fg_color=("red", "darkred"), hover_color=("darkred", "red"),
-                                       command=self.abort)
-        self.abort_btn.pack(side="left", padx=(0, 6))
-        self.abort_btn.configure(state="disabled")
-
-        remove_btn = ctk.CTkButton(header_btns, text="🗑 Remove", width=90, height=30,
-                                   fg_color=("gray70", "gray30"), hover_color=("gray60", "gray40"),
-                                   command=lambda: self.ui.remove_task(self))
-        remove_btn.pack(side="left")
-
-        # URL row
-        url_row = ctk.CTkFrame(self.frame, fg_color="transparent")
-        url_row.pack(fill="x", padx=10, pady=5)
-
-        url_label = ctk.CTkLabel(url_row, text="URL:")
-        url_label.pack(side="left", padx=(0, 8))
-
-        self.url_var = ctk.StringVar(value="")
-        self.url_entry = ctk.CTkEntry(url_row, textvariable=self.url_var, placeholder_text="https://www.youtube.com/watch?v=...", height=32)
-        self.url_entry.pack(side="left", fill="x", expand=True)
-
-        # Format row (per task)
-        fmt_row = ctk.CTkFrame(self.frame, fg_color="transparent")
-        fmt_row.pack(fill="x", padx=10, pady=5)
-
-        fmt_label = ctk.CTkLabel(fmt_row, text="Format:")
-        fmt_label.pack(side="left", padx=(0, 8))
-
-        # Use default format from config (global section removed)
-        self.format_var = ctk.StringVar(value=self.ui.config.get("default_format", "audio"))
-        fmt_radios = ctk.CTkFrame(fmt_row, fg_color="transparent")
-        fmt_radios.pack(side="left")
-        audio_radio = ctk.CTkRadioButton(fmt_radios, text="🎵 Audio (MP3)", variable=self.format_var, value="audio")
-        video_radio = ctk.CTkRadioButton(fmt_radios, text="🎬 Video", variable=self.format_var, value="video")
-        audio_radio.pack(side="left", padx=(0, 12))
-        video_radio.pack(side="left")
-
-        # Output row
-        out_row = ctk.CTkFrame(self.frame, fg_color="transparent")
-        out_row.pack(fill="x", padx=10, pady=5)
-
-        out_label = ctk.CTkLabel(out_row, text="Output:")
-        out_label.pack(side="left", padx=(0, 8))
-
-        self.output_var = ctk.StringVar(value=default_output)
-        self.output_entry = ctk.CTkEntry(out_row, textvariable=self.output_var, height=32)
-        self.output_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-
-        browse_btn = ctk.CTkButton(out_row, text="Browse", width=80, height=32, command=self._browse_output)
-        browse_btn.pack(side="left")
-
-        # Progress
-        prog_row = ctk.CTkFrame(self.frame, fg_color="transparent")
-        prog_row.pack(fill="x", padx=10, pady=(5, 5))
-
-        self.progress_bar = ctk.CTkProgressBar(prog_row)
-        self.progress_bar.pack(fill="x")
-        self.progress_bar.set(0)
-
-        self.progress_text = ctk.CTkLabel(self.frame, text="Waiting", font=ctk.CTkFont(size=12))
-        self.progress_text.pack(anchor="w", padx=10)
-
-        # Terminal / Status
-        self.status_text = ctk.CTkTextbox(self.frame, height=130, font=ctk.CTkFont(size=11, family="Consolas"))
-        self.status_text.pack(fill="x", padx=10, pady=(5, 6))
-
-        clear_btn = ctk.CTkButton(self.frame, text="Clear Log", width=100, height=28, command=self._clear_status)
-        clear_btn.pack(anchor="w", padx=10, pady=(0, 10))
-
-        # Internal tracking for throttled logging
-        self._last_logged_progress = 0
-        self._last_logged_filename = ""
-        self._logged_item_filenames = set()
 
     def _run_on_ui(self, fn):
         """Schedule a callable to run on the Tk main thread safely."""

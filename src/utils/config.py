@@ -13,6 +13,8 @@ class Config:
             "output_directory": self._get_default_output_directory(),
             "default_format": "audio",
             "cookie_file": "",  # Path to YouTube cookies file
+            "use_cookies_from_browser": True,
+            "cookies_from_browser": "brave",  # Default to Brave if available
             "auto_clear_logs": True,
             "max_logs_to_keep": 5,
             "download_history": True,

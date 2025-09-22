@@ -7,8 +7,12 @@ import shutil
 import glob
 from datetime import datetime
 from pathlib import Path
+import re
 from src.utils.config import Config
 from src.utils.log_cleaner import cleanup_logs
+from .support.errors import user_friendly_youtube_error, ffmpeg_instructions
+from .support.cleanup import collect_incomplete_files, remove_files
+from .support.playlist import extract_playlist_count_and_title
 
 
 class Downloader:
@@ -100,8 +104,9 @@ class Downloader:
         except Exception:
             pass
 
+        # Base yt-dlp options (kept conservative; specific modes adjust as needed)
         self.base_options = {
-            'format': 'bestaudio/best',
+            'format': 'best[height<=1080]/best',
             'download_archive': 'archive.txt',
             'nopostoverwrites': True,
             'writethumbnail': True,  # Always download thumbnails
@@ -116,60 +121,21 @@ class Downloader:
             'clean_infojson': True,
             # Encoding and compatibility options
             'encoding': 'utf-8',  # Force UTF-8 encoding for yt-dlp output
-            'compat_opts': ['no-keep-subs'],  # Avoid subtitle encoding issues
+            'compat_opts': ['no-keep-subs'],
             'ignoreerrors': True,  # Skip unavailable videos
             'abort_on_error': False,  # --no-abort-on-error equivalent
             'skip_unavailable_fragments': True,  # Skip missing HLS/DASH fragments
             'continue_dl': True,   # Continue after errors
-            'concurrent_fragments': 8,  # More parallel fragments for speed
-            'http_chunk_size': 20971520,  # 20MB chunks for even better speed
-            'buffer_size': 65536,  # Larger buffer size for faster I/O
-            'no_check_certificate': False,  # Keep security but optimize
+            'concurrent_fragments': 8,
+            'http_chunk_size': 20971520,
+            'buffer_size': 65536,
+            'no_check_certificate': False,
             'geo_bypass': True,  # Bypass geo-restrictions faster
             'prefer_free_formats': False,  # Don't prefer free formats if quality is better elsewhere
-            # Add proper headers to avoid mobile app detection
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-                'Upgrade-Insecure-Requests': '1',
-                'DNT': '1',
-                'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-                'Sec-Ch-Ua-Mobile': '?0',
-                'Sec-Ch-Ua-Platform': '"Windows"',
-            },
-            # Additional options to handle problematic connections
-            'sleep_interval_requests': 0.1,  # Small delay between requests
-            'sleep_interval': 0.1,  # Small delay between downloads
-            'max_sleep_interval': 1,  # Cap the sleep interval
-            'sleep_interval_subtitles': 0,  # No delay for subtitles
-            # Cookie handling to avoid detection - disabled by default to prevent errors
-            'cookiefile': None,  # Use cookies if available
-            'cookiesfrombrowser': None,  # Don't auto-load browser cookies to avoid permission errors
-            # Browser impersonation
-            'impersonate': None,  # Don't impersonate by default but have option ready
-            # Additional retry and timeout settings
-            'file_access_retries': 3,  # Retry file access issues
-            'extractor_retries': 3,  # Retry extraction failures
-            # Force format handling to avoid PO token issues
-            'format': 'best[height<=1080][ext=mp4]/best[ext=mp4]/best[height<=1080]/best',  # Prefer non-PO-token-required formats
-            # Additional YouTube-specific options
-            'youtube_include_dash_manifest': False,  # Skip DASH to avoid issues
-            'youtube_include_hls_manifest': False,  # Skip HLS to avoid issues
-            # YouTube extractor configuration to help with PO token issues
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['ios', 'android', 'web'],  # Try different clients to avoid PO token issues
-                    'player_skip': ['js', 'configs'],  # Skip unnecessary JS/config loading
-                }
-            },
-            # Prefer cookies from installed browsers if available (helps PO token mints)
-            # Users can set cookiesfrombrowser in settings later if needed
-            # Force better format compatibility
+            # Cookie handling (resolved per-run based on config)
+            'cookiefile': None,
+            'cookiesfrombrowser': None,
+            # FFmpeg merging behavior
             'merge_output_format': 'mp4',  # Ensure consistent output format
             'prefer_ffmpeg': True,  # Use FFmpeg for better format handling
         }
@@ -212,39 +178,9 @@ class Downloader:
             logging.warning(f"FFmpeg not found: {e}")
             return False
 
+    # Deprecated: use support.errors.user_friendly_youtube_error
     def _get_user_friendly_error_message(self, error_msg):
-        """Convert technical YouTube errors to user-friendly messages with suggestions"""
-        error_msg_lower = error_msg.lower()
-
-        if "http error 403" in error_msg_lower or "forbidden" in error_msg_lower:
-            return ("YouTube is blocking the download (HTTP 403 Forbidden). "
-                   "This often happens due to YouTube's anti-bot measures. "
-                   "Try using browser cookies or wait a few hours before retrying.")
-
-        elif "po token" in error_msg_lower or "gvs po token" in error_msg_lower:
-            return ("YouTube's Proof of Origin (PO) token system is blocking access. "
-                   "This is a newer YouTube protection mechanism. "
-                   "Try using browser cookies from a logged-in session.")
-
-        elif "no request handlers configured" in error_msg_lower:
-            return ("YouTube's request handler configuration is missing. "
-                   "This may be due to yt-dlp version compatibility issues. "
-                   "Try updating yt-dlp or using browser cookies.")
-
-        elif "video unavailable" in error_msg_lower:
-            return ("The video is not available for download. "
-                   "This could mean the video was deleted, made private, or is region-locked.")
-
-        elif "not available on this app" in error_msg_lower:
-            return ("YouTube says this content is not available on this application. "
-                   "This is often due to geographic restrictions or content licensing.")
-
-        elif "unable to download format" in error_msg_lower:
-            return ("Could not find a suitable video format to download. "
-                   "The video may have restricted formats or YouTube may be blocking access.")
-
-        else:
-            return "YouTube access error occurred. Try using browser cookies or updating yt-dlp."
+        return user_friendly_youtube_error(error_msg)
 
     def _get_ffmpeg_installation_instructions(self):
         """Get platform-specific FFmpeg installation instructions"""
@@ -252,30 +188,11 @@ class Downloader:
         system = platform.system().lower()
         
         if system == "windows":
-            return """
-FFmpeg Installation for Windows:
-1. Download FFmpeg from: https://ffmpeg.org/download.html#build-windows
-2. Extract the archive to a folder (e.g., C:\\ffmpeg)
-3. Add the bin folder to your PATH environment variable
-4. Restart your terminal/command prompt
-5. Verify installation: ffmpeg -version
-"""
+            return ffmpeg_instructions("windows")
         elif system == "darwin":  # macOS
-            return """
-FFmpeg Installation for macOS:
-1. Install Homebrew (if not already installed): /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-2. Install FFmpeg: brew install ffmpeg
-3. Verify installation: ffmpeg -version
-"""
+            return ffmpeg_instructions("darwin")
         else:  # Linux
-            return """
-FFmpeg Installation for Linux:
-Ubuntu/Debian: sudo apt update && sudo apt install ffmpeg
-CentOS/RHEL: sudo yum install ffmpeg
-Fedora: sudo dnf install ffmpeg
-Arch: sudo pacman -S ffmpeg
-Verify installation: ffmpeg -version
-"""
+            return ffmpeg_instructions("linux")
 
     def download(self, url: str, output_path: str,
                  is_audio: bool = True,
@@ -311,7 +228,7 @@ Verify installation: ffmpeg -version
         if is_playlist:
             self._is_playlist_download = True
             # Extract playlist information to get total count
-            total_videos, playlist_title = self._extract_playlist_info(url)
+            total_videos, playlist_title = extract_playlist_count_and_title(url)
             self._playlist_total_videos = total_videos
             logging.info(f"Playlist detected: {playlist_title} with {total_videos} videos")
 
@@ -342,11 +259,7 @@ Verify installation: ffmpeg -version
         if not is_audio:
             # Use a more robust format selection to avoid choppy audio
             # Priority: best single file -> best video+audio -> fallback to best available
-            options['format'] = (
-                'best[height<=1080][ext=mp4]/best[height<=1080]/best[ext=mp4]/'
-                'bestvideo[height<=1080]+bestaudio[ext=m4a]/bestvideo+bestaudio/'
-                'best'
-            )
+            options['format'] = 'bestvideo*+bestaudio/best[ext=mp4]/best'
             options.pop('extractaudio', None)  # Remove audio extraction for video
             options['postprocessors'] = []
             
@@ -357,20 +270,26 @@ Verify installation: ffmpeg -version
             options['fragment_retries'] = 10  # Retry fragments for better stability
             options['keep_fragments'] = False  # Clean up fragments after merge
             
-            # For video, use simple postprocessors
+            # For video, convert/remux to mp4 first, then embed thumbnail and metadata
+            if self.ffmpeg_available:
+                options['postprocessors'].append({
+                    'key': 'FFmpegVideoConvertor',
+                    'preferedformat': 'mp4',
+                })
+
             if metadata_options.get('embed_thumbnail', True) and self.ffmpeg_available:
                 options['postprocessors'].extend([
                     {
                         'key': 'FFmpegThumbnailsConvertor',
                         'format': 'jpg',
-                        'when': 'before_dl',  # Convert thumbnails before download for better reliability
+                        'when': 'before_dl',
                     },
                     {
                         'key': 'EmbedThumbnail',
-                        'already_have_thumbnail': False,  # Force re-embedding even if thumbnail exists
+                        'already_have_thumbnail': False,
                     }
                 ])
-            
+
             if metadata_options.get('embed_metadata', True) and self.ffmpeg_available:
                 options['postprocessors'].append({
                     'key': 'FFmpegMetadata',
@@ -402,11 +321,8 @@ Verify installation: ffmpeg -version
                     logging.info(f"Will embed playlist name '{playlist_title_for_metadata}' in file metadata")
             
             # Add audio normalization postprocessor for video
-            if self.ffmpeg_available:
-                options['postprocessors'].append({
-                    'key': 'FFmpegVideoConvertor',
-                    'preferedformat': 'mp4',
-                })
+            # Ensure final extension is mp4
+            options['final_ext'] = 'mp4'
 
             # Handle playlist album override for video files
             if metadata_options.get('playlist_album_override', False) and playlist_title_for_metadata:
@@ -557,19 +473,17 @@ Verify installation: ffmpeg -version
                     '-write_id3v1', '1',
                 ]
             else:
-                # Video-specific FFmpeg args optimized for speed with maximum resource usage
+                # Video-specific FFmpeg args (avoid forcing copy to allow conversion to mp4)
                 options['postprocessor_args']['ffmpeg'] = [
                     '-hide_banner',
                     '-loglevel', 'error',
-                    '-threads', '0',  # Use all available CPU cores
-                    '-thread_type', 'frame+slice',  # Use both frame and slice threading
-                    '-c:v', 'copy',  # Copy video stream to avoid re-encoding
-                    '-c:a', 'copy',  # Copy audio too if possible (much faster)
-                    '-movflags', '+faststart',  # Optimize for fast streaming
-                    '-avoid_negative_ts', 'make_zero',  # Fix timestamp issues
-                    '-bufsize', '4M',  # Larger buffer for video processing
-                    '-maxrate', '50M',  # Allow higher bitrates for faster processing
-                    '-readrate_initial_burst', '3.0',  # Even faster initial processing for video
+                    '-threads', '0',
+                    '-thread_type', 'frame+slice',
+                    '-movflags', '+faststart',
+                    '-avoid_negative_ts', 'make_zero',
+                    '-bufsize', '4M',
+                    '-maxrate', '50M',
+                    '-readrate_initial_burst', '3.0',
                 ]
 
         # Set paths with improved template and sanitization
@@ -579,7 +493,6 @@ Verify installation: ffmpeg -version
             template = '%(title)s.%(ext)s'
         
         # Sanitize the template to avoid file system issues
-        import re
         sanitized_template = re.sub(r'[<>:"/\\|?*]', '_', template)
         options['outtmpl'] = os.path.join(output_path, sanitized_template)
         
@@ -711,6 +624,15 @@ Verify installation: ffmpeg -version
             self._cleanup_incomplete_files()
 
             # Try download with primary configuration
+            # Resolve cookies-from-browser default (Brave) unless a cookie file is provided
+            try:
+                if not options.get('cookiefile'):
+                    if self.config.get('use_cookies_from_browser', True):
+                        browser_name = self.config.get('cookies_from_browser', 'brave')
+                        options['cookiesfrombrowser'] = browser_name
+            except Exception:
+                pass
+
             result = self._try_download_with_fallback(url, options, output_path)
 
             # Clean up thumbnail files after successful download (with small delay for postprocessors)
@@ -792,7 +714,7 @@ Verify installation: ffmpeg -version
                 "no request handlers configured", "video unavailable",
                 "not available on this app", "unable to download format"
             ]):
-                user_friendly_msg = self._get_user_friendly_error_message(error_msg)
+                user_friendly_msg = user_friendly_youtube_error(error_msg)
                 logging.error(f"YouTube access error: {user_friendly_msg}")
                 raise Exception(f"YouTube Access Error: {user_friendly_msg}\n\nOriginal error: {error_msg}")
 
@@ -853,35 +775,9 @@ Verify installation: ffmpeg -version
                 pass
         return hook
 
+    # Deprecated: use support.playlist.extract_playlist_count_and_title
     def _extract_playlist_info(self, url):
-        """Extract playlist information to get total video count"""
-        try:
-            with yt_dlp.YoutubeDL({
-                'quiet': True,
-                'extract_flat': True,
-                'ignoreerrors': True
-            }) as ydl:
-                playlist_info = ydl.extract_info(url, download=False)
-
-                if playlist_info and 'entries' in playlist_info:
-                    # Count valid entries (filter out None entries)
-                    all_entries = playlist_info['entries']
-                    valid_entries = [entry for entry in all_entries if entry is not None]
-
-                    logging.info(f"Playlist extraction: {len(all_entries)} total entries, {len(valid_entries)} valid entries")
-
-                    # Log first few entries for debugging
-                    for i, entry in enumerate(valid_entries[:5]):
-                        if entry and isinstance(entry, dict):
-                            logging.info(f"Entry {i+1}: ID={entry.get('id', 'N/A')}, Title={entry.get('title', 'N/A')[:50]}...")
-
-                    return len(valid_entries), playlist_info.get('title', 'Unknown Playlist')
-                else:
-                    logging.warning("No entries found in playlist info")
-                    return 0, "Unknown Playlist"
-        except Exception as e:
-            logging.warning(f"Could not extract playlist info: {e}")
-            return 0, "Unknown Playlist"
+        return extract_playlist_count_and_title(url)
 
     def get_playlist_progress(self):
         """Get current download progress information (works for both playlists and single videos)"""
@@ -1108,48 +1004,10 @@ Verify installation: ffmpeg -version
             
             # Files to clean up
             cleanup_files = set()
-            
-            # Add tracked active downloads
             cleanup_files.update(self._active_download_files)
+            cleanup_files.update(collect_incomplete_files(self._output_directory, cleanup_type))
             
-            # Find common partial file patterns
-            partial_patterns = [
-                "*.part",           # yt-dlp partial files
-                "*.f*",             # format-specific partial files (f140, f137, etc.)
-                "*.temp",           # temporary files
-                "*.tmp",            # temporary files
-                "*.temp.mp3",       # temporary MP3 files
-                "*.temp.mp4",       # temporary MP4 files
-                "*.temp.webm",      # temporary WebM files
-                "*.temp.mkv",       # temporary MKV files
-                "*.ytdl",           # yt-dlp specific temp files
-                "*.ytdl.meta",      # yt-dlp meta remnants
-                "*.meta",           # generic meta remnants
-                "*.webm.part",      # WebM partial files
-                "*.mp4.part",       # MP4 partial files
-                "*.mkv.part",       # MKV partial files
-                "*.m4a.part",       # M4A partial files
-                "*.frag",           # HLS/DASH fragment leftovers
-                "*.fragment*",      # any fragment naming
-                "*.incomplete",     # incomplete files
-                "*.downloading",    # downloading files
-            ]
-            
-            # Also clean up thumbnail files when aborting or after successful embedding
-            thumbnail_patterns = [
-                "*.webp",       # WebP thumbnails - always clean these up as they're intermediate files
-            ]
-            # Always clean up WebP files as they're intermediate conversion files
-            partial_patterns.extend(["*.webp"])
-            
-            # During abort or error, also clean up JPG thumbnails to remove partial downloads
-            if cleanup_type in ["abort", "error"]:
-                thumbnail_patterns.extend([
-                    "*.jpg",        # JPEG thumbnails
-                    "*.jpeg",       # JPEG thumbnails
-                    "*.png",        # PNG thumbnails (converted thumbnails)
-                ])
-                partial_patterns.extend(thumbnail_patterns[1:])  # Skip WebP as already added
+            # Do NOT delete user JPG/PNG thumbnails on abort/error; limit to WebP and temp fragments
             
             # Handle duplicate thumbnails - find and remove duplicates
             self._cleanup_duplicate_thumbnails(output_path)
@@ -1158,29 +1016,8 @@ Verify installation: ffmpeg -version
             if cleanup_type == "post_processing":
                 self._cleanup_embedded_thumbnails(output_path)
             
-            for pattern in partial_patterns:
-                for file_path in output_path.rglob(pattern):
-                    # Only clean up recent files (modified in last hour) to avoid removing user files
-                    if file_path.is_file():
-                        try:
-                            # Check if file was modified recently (within last hour)
-                            import time
-                            file_age = time.time() - file_path.stat().st_mtime
-                            
-                            # For WebP files, always be aggressive since they're intermediate files
-                            # For thumbnail files during abort/error, be more aggressive (within 10 minutes)
-                            # For other files, use 1 hour limit
-                            if pattern == "*.webp":
-                                time_limit = 7200  # 2 hours for WebP files (more generous but still cleanup)
-                            elif cleanup_type in ["abort", "error"] and pattern in ["*.jpg", "*.jpeg", "*.png"]:
-                                time_limit = 600  # 10 minutes for thumbnails during abort/error
-                            else:
-                                time_limit = 3600  # 1 hour for other files
-                            
-                            if file_age < time_limit:
-                                cleanup_files.add(str(file_path))
-                        except:
-                            pass
+            # Remove the files
+            cleaned_count, cleaned_pairs = remove_files(cleanup_files)
             
             # Clean up auxiliary metadata files based on preferences
             try:
@@ -1207,20 +1044,9 @@ Verify installation: ffmpeg -version
                 pass
 
             # Clean up the files
-            cleaned_count = 0
-            cleaned_files = []
-            for file_path in cleanup_files:
-                try:
-                    if os.path.exists(file_path):
-                        file_size = os.path.getsize(file_path)
-                        os.remove(file_path)
-                        cleaned_count += 1
-                        cleaned_files.append(os.path.basename(file_path))
-                        logging.info(f"Cleaned up incomplete file: {file_path} ({file_size} bytes)")
-                except Exception as e:
-                    logging.warning(f"Failed to clean up file {file_path}: {e}")
-            
             if cleaned_count > 0:
+                for fp, size in cleaned_pairs:
+                    logging.info(f"Cleaned up incomplete file: {fp} ({size} bytes)")
                 logging.info(f"Cleaned up {cleaned_count} incomplete download files")
                 
             # Clear the tracking set
@@ -1228,7 +1054,7 @@ Verify installation: ffmpeg -version
             
             return {
                 "cleaned_count": cleaned_count,
-                "cleaned_files": cleaned_files,
+                "cleaned_files": [os.path.basename(fp) for fp, _ in cleaned_pairs],
                 "error": None
             }
             
