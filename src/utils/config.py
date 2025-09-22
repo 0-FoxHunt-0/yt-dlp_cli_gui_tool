@@ -30,7 +30,9 @@ class Config:
             "write_description": False,
             "write_info_json": False,
             "embed_subs": False,
-            "playlist_album_override": False
+            "playlist_album_override": False,
+            "create_m3u": False,
+            "m3u_to_parent": False
         }
         self.settings = self.load_settings()
         # Ensure default output directory exists

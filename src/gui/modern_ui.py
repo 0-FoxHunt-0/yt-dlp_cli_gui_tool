@@ -3,6 +3,8 @@ import threading
 import os
 import signal
 import sys
+import json
+import re
 from tkinter import filedialog, messagebox
 from ..core.downloader import Downloader
 from ..utils.config import Config
@@ -360,6 +362,8 @@ class ModernUI:
             ("embed_subs", "📝 Download Subtitles", self._load_metadata_setting("embed_subs", False)),
             ("playlist_album_override", "📀 Use Playlist as Album", self._load_metadata_setting("playlist_album_override", False)),
             ("force_playlist_redownload", "🔄 Force Re-download All", self._load_metadata_setting("force_playlist_redownload", False)),
+            ("create_m3u", "📄 Create M3U", self._load_metadata_setting("create_m3u", False)),
+            ("m3u_to_parent", "📁 Place M3U in parent folder", self._load_metadata_setting("m3u_to_parent", False)),
         ]
         
         # Add performance note
@@ -993,6 +997,9 @@ class TaskItem:
         self.is_running = False
         self._aborted = False
         self._destroyed = False
+        # M3U tracking for finalization
+        self._m3u_playlist_dir = None
+        self._m3u_playlist_title = None
 
         # Header row with title and remove button
         header = ctk.CTkFrame(self.frame, fg_color="transparent")
@@ -1186,8 +1193,34 @@ class TaskItem:
                         with yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True}) as ydl:
                             info = ydl.extract_info(url, download=False)
                             if info and 'entries' in info:
-                                total = len([e for e in info['entries'] if e is not None])
+                                valid_entries = [e for e in info['entries'] if e is not None]
+                                total = len(valid_entries)
                                 self.ui.root.after(0, lambda: self._set_progress_text_safe(f"📋 Playlist: {total} videos"))
+
+                                # Pre-create playlist directory and reconcile existing M3U if requested
+                                try:
+                                    if self.ui.metadata_vars.get('create_m3u', None) and self.ui.metadata_vars['create_m3u'].get():
+                                        playlist_title = info.get('title', 'Unknown_Playlist')
+                                        playlist_dir = self._compute_playlist_directory(output_dir, playlist_title)
+                                        os.makedirs(playlist_dir, exist_ok=True)
+                                        # Remember for finalization
+                                        self._m3u_playlist_dir = playlist_dir
+                                        self._m3u_playlist_title = playlist_title
+                                        # Build expected mapping (index -> title, id)
+                                        expected = []
+                                        for idx, entry in enumerate(valid_entries, start=1):
+                                            try:
+                                                expected.append({
+                                                    'index': idx,
+                                                    'id': entry.get('id'),
+                                                    'title': entry.get('title')
+                                                })
+                                            except Exception:
+                                                pass
+                                        # Reconcile existing M3U and seed state
+                                        self._reconcile_existing_playlist_m3u(playlist_dir, playlist_title, expected)
+                                except Exception:
+                                    pass
                     except Exception:
                         pass
 
@@ -1316,6 +1349,12 @@ class TaskItem:
                 self._last_logged_progress = 0
                 self._last_logged_filename = ""
 
+                # Attempt M3U incremental update when a file finishes a stage
+                try:
+                    self._maybe_update_m3u(d)
+                except Exception:
+                    pass
+
             elif d['status'] == 'error':
                 error_msg = d.get('error', 'Unknown error')
                 self._set_progress_text_safe(f"Error: {error_msg}")
@@ -1362,6 +1401,205 @@ class TaskItem:
             except Exception:
                 pass
             self.is_running = False
+
+            # Finalize M3U: ensure file is written even if last hook missed
+            try:
+                enabled_var = self.ui.metadata_vars.get('create_m3u', None)
+                if enabled_var and enabled_var.get():
+                    # If we had a playlist dir precomputed use it; otherwise, attempt to infer from output_path
+                    target_dir = self._m3u_playlist_dir
+                    if not target_dir:
+                        try:
+                            # Infer from the chosen output directory for this task
+                            out_dir = self.output_var.get().strip()
+                            if out_dir and os.path.isdir(out_dir):
+                                target_dir = out_dir
+                        except Exception:
+                            pass
+                    if target_dir:
+                        self._write_m3u_from_state(target_dir, self._m3u_playlist_title)
+                        self.log("📄 M3U playlist updated.")
+            except Exception:
+                pass
         except Exception:
             # If anything fails during completion (likely due to destroyed widgets), just exit quietly
+            pass
+
+    # ===== M3U helpers =====
+    def _sanitize_name(self, name: str) -> str:
+        try:
+            if not name:
+                return ""
+            return re.sub(r'[<>:"/\\|?*]', '_', name)
+        except Exception:
+            return name or ""
+
+    def _compute_playlist_directory(self, output_dir: str, playlist_title: str) -> str:
+        safe_title = self._sanitize_name(playlist_title or 'Unknown_Playlist')
+        return os.path.join(output_dir, safe_title)
+
+    def _state_path(self, directory: str) -> str:
+        return os.path.join(directory, ".playlist_state.json")
+
+    def _load_state(self, directory: str) -> dict:
+        try:
+            path = self._state_path(directory)
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return {"playlist_title": None, "total_entries": 0, "entries": {}}
+
+    def _save_state(self, directory: str, state: dict):
+        try:
+            path = self._state_path(directory)
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _m3u_path(self, directory: str, playlist_title: str = None) -> str:
+        try:
+            base = os.path.basename(directory).strip() or (playlist_title or "playlist")
+        except Exception:
+            base = (playlist_title or "playlist")
+        safe = self._sanitize_name(base)
+        # If user wants M3U in parent folder, place it there
+        try:
+            to_parent = self.ui.metadata_vars.get('m3u_to_parent', None)
+            if to_parent and to_parent.get():
+                parent_dir = os.path.dirname(directory.rstrip(os.sep)) or directory
+                return os.path.join(parent_dir, f"{safe}.m3u")
+        except Exception:
+            pass
+        return os.path.join(directory, f"{safe}.m3u")
+
+    def _write_m3u_from_state(self, directory: str, playlist_title: str = None):
+        state = self._load_state(directory)
+        # Merge provided playlist_title
+        if playlist_title and not state.get("playlist_title"):
+            state["playlist_title"] = playlist_title
+
+        # Build ordered list by playlist index
+        try:
+            entries = state.get("entries", {})
+            ordered = []
+            for k, v in entries.items():
+                try:
+                    ordered.append((int(k), v))
+                except Exception:
+                    pass
+            ordered.sort(key=lambda x: x[0])
+
+            # Prepare lines (relative paths)
+            lines = []
+            for _, meta in ordered:
+                path = meta.get('path')
+                if not path or not os.path.exists(path):
+                    continue
+                # For parent placement, keep paths relative to the M3U file location
+                try:
+                    target_m3u_dir = os.path.dirname(self._m3u_path(directory, state.get("playlist_title")))
+                    rel = os.path.relpath(path, target_m3u_dir)
+                except Exception:
+                    rel = path
+                lines.append(rel.replace('\\', '/'))
+
+            m3u_file = self._m3u_path(directory, state.get("playlist_title"))
+            with open(m3u_file, 'w', encoding='utf-8') as f:
+                f.write("#EXTM3U\n")
+                for rel in lines:
+                    # Basic M3U without EXTINF duration; Samsung Music accepts plain entries
+                    f.write(f"{rel}\n")
+        except Exception:
+            pass
+
+    def _reconcile_existing_playlist_m3u(self, directory: str, playlist_title: str, expected_entries: list):
+        """Seed or fix M3U before download by matching existing files to expected order."""
+        try:
+            state = self._load_state(directory)
+            state['playlist_title'] = playlist_title or state.get('playlist_title') or ''
+            state['total_entries'] = max(state.get('total_entries', 0) or 0, len(expected_entries))
+
+            # Build quick lookup by sanitized title stem
+            expected_by_stem = {}
+            for item in expected_entries:
+                title = item.get('title') or ''
+                stem = self._sanitize_name(title).lower()
+                expected_by_stem[stem] = item
+
+            # Scan directory for media files
+            media_exts = ('.mp3', '.m4a', '.flac', '.ogg', '.wav', '.mp4', '.mkv', '.webm')
+            for root, _, files in os.walk(directory):
+                if os.path.abspath(root) != os.path.abspath(directory):
+                    continue
+                for fn in files:
+                    if not fn.lower().endswith(media_exts):
+                        continue
+                    stem = os.path.splitext(fn)[0].lower()
+                    # Find best match by prefix or equality
+                    match = None
+                    if stem in expected_by_stem:
+                        match = expected_by_stem[stem]
+                    else:
+                        for key, item in expected_by_stem.items():
+                            if stem.startswith(key[:50]):
+                                match = item
+                                break
+                    if match:
+                        idx = int(match.get('index') or 0)
+                        if idx > 0:
+                            path = os.path.join(directory, fn)
+                            state.setdefault('entries', {})[str(idx)] = {
+                                'id': match.get('id'),
+                                'title': match.get('title'),
+                                'path': path
+                            }
+            self._save_state(directory, state)
+            self._write_m3u_from_state(directory, playlist_title)
+        except Exception:
+            pass
+
+    def _maybe_update_m3u(self, d: dict):
+        # Check toggle
+        try:
+            enabled_var = self.ui.metadata_vars.get('create_m3u', None)
+            if not enabled_var or not enabled_var.get():
+                return
+        except Exception:
+            return
+
+        info = d.get('info_dict', {}) or {}
+        pl_index = info.get('playlist_index')
+        if not pl_index:
+            return
+        # Prefer final filepath reported by postprocessor; fallback to filename
+        final_path = info.get('filepath') or d.get('filename')
+        if not final_path:
+            return
+        directory = os.path.dirname(final_path)
+        playlist_title = info.get('playlist_title') or info.get('playlist') or ''
+        total = info.get('n_entries') or info.get('playlist_count') or 0
+        video_id = info.get('id')
+        title = info.get('title')
+
+        # Update state and M3U
+        try:
+            state = self._load_state(directory)
+            if playlist_title:
+                state['playlist_title'] = playlist_title
+            if total:
+                try:
+                    state['total_entries'] = max(int(total), int(state.get('total_entries', 0) or 0))
+                except Exception:
+                    pass
+            state.setdefault('entries', {})[str(int(pl_index))] = {
+                'id': video_id,
+                'title': title,
+                'path': final_path
+            }
+            self._save_state(directory, state)
+            self._write_m3u_from_state(directory, playlist_title)
+        except Exception:
             pass
