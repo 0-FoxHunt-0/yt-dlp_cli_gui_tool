@@ -5,6 +5,7 @@ import signal
 import sys
 import json
 import re
+import difflib
 from tkinter import filedialog, messagebox
 from ..core.downloader import Downloader
 from ..utils.config import Config
@@ -254,6 +255,532 @@ class ModernUI:
             border_color=("gray60", "gray40")
         )
         self.theme_button.pack(side="right", pady=(0, 10))
+
+        # Import button
+        import_button = ctk.CTkButton(
+            header_frame,
+            text="📥 Import",
+            width=110,
+            height=40,
+            command=self.show_import_dialog
+        )
+        import_button.pack(side="right", padx=(0, 10), pady=(0, 10))
+
+    def show_import_dialog(self):
+        """Show a modal dialog to import files from one directory to another."""
+        try:
+            # Create modal window
+            dialog = ctk.CTkToplevel(self.root)
+        except Exception:
+            # Fallback to standard Toplevel if CTkToplevel not available
+            import tkinter as tk
+            dialog = tk.Toplevel(self.root)
+        dialog.title("Import Files")
+        try:
+            dialog.grab_set()
+        except Exception:
+            pass
+
+        # Variables with defaults from config
+        last_in = self.config.get("last_import_input_dir", "") or ""
+        last_out = self.config.get("last_import_output_dir", self.config.get("output_directory", self.config.get_default_output_directory())) or ""
+        override_default = bool(self.config.get("import_override_existing", False))
+
+        input_var = ctk.StringVar(value=last_in)
+        output_var = ctk.StringVar(value=last_out)
+        override_var = ctk.BooleanVar(value=override_default)
+
+        # Layout frames
+        container = ctk.CTkFrame(dialog)
+        container.pack(fill="both", expand=True, padx=20, pady=20)
+
+        # Input directory row
+        in_row = ctk.CTkFrame(container, fg_color="transparent")
+        in_row.pack(fill="x", pady=(0, 10))
+        in_label = ctk.CTkLabel(in_row, text="Input directory:")
+        in_label.pack(side="left", padx=(0, 8))
+        in_entry = ctk.CTkEntry(in_row, textvariable=input_var, height=32)
+        in_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        in_browse = ctk.CTkButton(in_row, text="Browse", width=80, height=32, command=lambda: self._browse_dir_into_var(input_var, title="Select Input Directory"))
+        in_browse.pack(side="left")
+
+        # Output directory row
+        out_row = ctk.CTkFrame(container, fg_color="transparent")
+        out_row.pack(fill="x", pady=(0, 10))
+        out_label = ctk.CTkLabel(out_row, text="Output directory:")
+        out_label.pack(side="left", padx=(0, 8))
+        out_entry = ctk.CTkEntry(out_row, textvariable=output_var, height=32)
+        out_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        out_browse = ctk.CTkButton(out_row, text="Browse", width=80, height=32, command=lambda: self._browse_dir_into_var(output_var, title="Select Output Directory"))
+        out_browse.pack(side="left")
+
+        # Options row
+        options_row = ctk.CTkFrame(container, fg_color="transparent")
+        options_row.pack(fill="x", pady=(0, 10))
+        override_chk = ctk.CTkCheckBox(options_row, text="Override existing", variable=override_var)
+        override_chk.pack(anchor="w")
+
+        # Duplicate detection options (mutually exclusive)
+        dup_row = ctk.CTkFrame(container, fg_color="transparent")
+        dup_row.pack(fill="x", pady=(0, 10))
+
+        # Filename similarity option
+        name_sim_var = ctk.BooleanVar(value=False)
+        name_sim_chk = ctk.CTkCheckBox(dup_row, text="Skip if filename similarity >= (%)", variable=name_sim_var)
+        name_sim_chk.pack(side="left")
+        name_thresh_var = ctk.StringVar(value="70")
+        name_thresh_entry = ctk.CTkEntry(dup_row, textvariable=name_thresh_var, width=60, height=28)
+        name_thresh_entry.pack(side="left", padx=(8, 0))
+
+        # Content similarity option
+        content_sim_var = ctk.BooleanVar(value=False)
+        content_sim_chk = ctk.CTkCheckBox(dup_row, text="Skip if first Xs content matches", variable=content_sim_var)
+        content_sim_chk.pack(side="left", padx=(16, 0))
+        content_secs_var = ctk.StringVar(value="10")
+        content_secs_entry = ctk.CTkEntry(dup_row, textvariable=content_secs_var, width=60, height=28)
+        content_secs_entry.pack(side="left", padx=(8, 0))
+
+        # Initialize entry states (disabled until checked)
+        name_thresh_entry.configure(state="disabled")
+        content_secs_entry.configure(state="disabled")
+
+        def _enforce_exclusive(source: str):
+            try:
+                if source == 'name' and name_sim_var.get():
+                    # Disable content option
+                    content_sim_var.set(False)
+                    content_secs_entry.configure(state="disabled")
+                    # Enable name entry
+                    name_thresh_entry.configure(state="normal")
+                elif source == 'content' and content_sim_var.get():
+                    # Disable name option
+                    name_sim_var.set(False)
+                    name_thresh_entry.configure(state="disabled")
+                    # Enable content entry
+                    content_secs_entry.configure(state="normal")
+                else:
+                    # If unchecked, disable its entry
+                    if source == 'name':
+                        name_thresh_entry.configure(state="disabled")
+                    else:
+                        content_secs_entry.configure(state="disabled")
+            except Exception:
+                pass
+
+        name_sim_chk.configure(command=lambda: _enforce_exclusive('name'))
+        content_sim_chk.configure(command=lambda: _enforce_exclusive('content'))
+
+        # Progress UI
+        progress_row = ctk.CTkFrame(container, fg_color="transparent")
+        progress_row.pack(fill="x", pady=(10, 10))
+        prog = ctk.CTkProgressBar(progress_row)
+        prog.pack(fill="x")
+        prog.set(0)
+        prog_label = ctk.CTkLabel(container, text="")
+        prog_label.pack(anchor="w", pady=(6, 0))
+
+        log_box = ctk.CTkTextbox(container, height=140, font=ctk.CTkFont(size=11, family="Consolas"))
+        log_box.pack(fill="both", expand=True, pady=(8, 8))
+
+        # Buttons row
+        btn_row = ctk.CTkFrame(container, fg_color="transparent")
+        btn_row.pack(fill="x", pady=(4, 0))
+        # Shared state for undo
+        import_state = {"actions": [], "backup_root": None}
+
+        start_btn = ctk.CTkButton(btn_row, text="Start Import", height=34,
+                                  command=lambda: self._start_import_worker(
+                                      dialog,
+                                      input_var.get().strip(),
+                                      output_var.get().strip(),
+                                      bool(override_var.get()),
+                                      bool(name_sim_var.get()),
+                                      name_thresh_var.get().strip(),
+                                      bool(content_sim_var.get()),
+                                      content_secs_var.get().strip(),
+                                      prog, prog_label, log_box, start_btn, undo_btn, import_state
+                                  ))
+        start_btn.pack(side="left")
+        undo_btn = ctk.CTkButton(btn_row, text="Undo Last Import", height=34,
+                                 fg_color=("orange", "#b87333"), hover_color=("#e69500", "#996633"),
+                                 state="disabled",
+                                 command=lambda: self._start_undo_worker(dialog, prog, prog_label, log_box, undo_btn, start_btn, import_state))
+        undo_btn.pack(side="left", padx=(8, 0))
+        close_btn = ctk.CTkButton(btn_row, text="Close", height=34, fg_color=("gray70", "gray30"), hover_color=("gray60", "gray40"),
+                                  command=lambda: self._close_dialog_safe(dialog))
+        close_btn.pack(side="right")
+
+    def _close_dialog_safe(self, dialog):
+        try:
+            dialog.destroy()
+        except Exception:
+            pass
+
+    def _browse_dir_into_var(self, var, title="Select Directory"):
+        try:
+            directory = filedialog.askdirectory(title=title, initialdir=var.get() or self.config.get("output_directory", self.config.get_default_output_directory()))
+            if directory:
+                var.set(directory)
+        except Exception:
+            pass
+
+    def _start_import_worker(self, dialog, input_dir, output_dir, override_existing,
+                             use_name_similarity, name_threshold_str,
+                             use_content_similarity, content_seconds_str,
+                             prog, prog_label, log_box, start_btn, undo_btn, import_state):
+        # Validate
+        if not input_dir or not os.path.isdir(input_dir):
+            try:
+                messagebox.showerror("Import", "Please select a valid input directory")
+            except Exception:
+                pass
+            return
+        if not output_dir:
+            try:
+                messagebox.showerror("Import", "Please select an output directory")
+            except Exception:
+                pass
+            return
+        if os.path.abspath(input_dir) == os.path.abspath(output_dir):
+            try:
+                messagebox.showerror("Import", "Input and output directories must be different")
+            except Exception:
+                pass
+            return
+
+        # Persist last used settings
+        try:
+            self.config.set("last_import_input_dir", input_dir)
+            self.config.set("last_import_output_dir", output_dir)
+            self.config.set("import_override_existing", bool(override_existing))
+        except Exception:
+            pass
+
+        # Validate mutual exclusivity
+        if use_name_similarity and use_content_similarity:
+            try:
+                messagebox.showerror("Import", "Only one similarity option can be active at a time.")
+            except Exception:
+                pass
+            return
+
+        # Parse thresholds
+        name_threshold = None
+        content_seconds = None
+        try:
+            if use_name_similarity:
+                name_threshold = float(name_threshold_str)
+                if name_threshold < 0 or name_threshold > 100:
+                    raise ValueError()
+        except Exception:
+            try:
+                messagebox.showerror("Import", "Please enter a valid filename similarity percentage (0-100).")
+            except Exception:
+                pass
+            return
+
+        try:
+            if use_content_similarity:
+                content_seconds = float(content_seconds_str)
+                if content_seconds <= 0 or content_seconds > 3600:
+                    raise ValueError()
+        except Exception:
+            try:
+                messagebox.showerror("Import", "Please enter a valid number of seconds (1-3600) for content match.")
+            except Exception:
+                pass
+            return
+
+        # Ensure output dir exists
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except Exception as e:
+            try:
+                messagebox.showerror("Import", f"Cannot create output directory: {e}")
+            except Exception:
+                pass
+            return
+
+        # Reset undo state and disable buttons during import
+        try:
+            start_btn.configure(state="disabled")
+            undo_btn.configure(state="disabled")
+        except Exception:
+            pass
+
+        def log(msg):
+            try:
+                log_box.insert("end", f"{msg}\n")
+                log_box.see("end")
+            except Exception:
+                pass
+
+        def set_status(text):
+            try:
+                prog_label.configure(text=text)
+            except Exception:
+                pass
+
+        def set_progress(value):
+            try:
+                prog.set(value)
+            except Exception:
+                pass
+
+        def _filenames_similar(src_path, dst_path, threshold_percent):
+            try:
+                src_name = os.path.splitext(os.path.basename(src_path))[0]
+                dst_name = os.path.splitext(os.path.basename(dst_path))[0]
+                ratio = difflib.SequenceMatcher(None, src_name.lower(), dst_name.lower()).ratio() * 100.0
+                return ratio >= threshold_percent, ratio
+            except Exception:
+                return False, 0.0
+
+        def _content_similar(src_path, dst_path, seconds):
+            try:
+                # Compare first N bytes proportional to seconds as a heuristic when duration unknown.
+                # Read a fixed byte window per second (e.g., 256KB/s) capped at 8MB
+                bytes_per_sec = 262144  # 256 KB
+                max_bytes = int(min(8 * 1024 * 1024, max(1, seconds) * bytes_per_sec))
+                size_src = os.path.getsize(src_path) if os.path.exists(src_path) else 0
+                size_dst = os.path.getsize(dst_path) if os.path.exists(dst_path) else 0
+                if size_src == 0 or size_dst == 0:
+                    return False
+                to_read = min(max_bytes, size_src, size_dst)
+                with open(src_path, 'rb') as f1, open(dst_path, 'rb') as f2:
+                    chunk1 = f1.read(to_read)
+                    chunk2 = f2.read(to_read)
+                if not chunk1 or not chunk2:
+                    return False
+                # Use a quick hash-based check
+                import hashlib
+                h1 = hashlib.blake2s(chunk1, digest_size=16).digest()
+                h2 = hashlib.blake2s(chunk2, digest_size=16).digest()
+                return h1 == h2
+            except Exception:
+                return False
+
+        def worker():
+            try:
+                # Collect files to copy (recursive)
+                files = []
+                for root, _, filenames in os.walk(input_dir):
+                    for name in filenames:
+                        src_path = os.path.join(root, name)
+                        rel = os.path.relpath(src_path, input_dir)
+                        dest_path = os.path.join(output_dir, rel)
+                        files.append((src_path, dest_path))
+
+                total = len(files)
+                copied = 0
+                skipped = 0
+                errors = 0
+
+                if total == 0:
+                    set_status("No files found in input directory")
+                    return
+
+                set_status(f"Preparing to import {total} file(s)...")
+
+                # Prepare backup directory for overwritten files
+                backup_root = None
+                import_state["actions"] = []
+                import_state["backup_root"] = None
+
+                for idx, (src, dst) in enumerate(files, start=1):
+                    try:
+                        # Make sure destination directory exists
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+
+                        if os.path.exists(dst):
+                            # Similarity-based duplicate checks
+                            if use_name_similarity and name_threshold is not None:
+                                similar, ratio = _filenames_similar(src, dst, name_threshold)
+                                if similar:
+                                    skipped += 1
+                                    log(f"Skipped by name similarity ({ratio:.1f}% >= {name_threshold:.1f}%): {os.path.relpath(dst, output_dir)}")
+                                    continue
+                            if use_content_similarity and content_seconds is not None:
+                                try:
+                                    if _content_similar(src, dst, content_seconds):
+                                        skipped += 1
+                                        log(f"Skipped by content similarity (first {int(content_seconds)}s match): {os.path.relpath(dst, output_dir)}")
+                                        continue
+                                except Exception as e:
+                                    log(f"Content similarity check error, proceeding: {e}")
+                            if override_existing:
+                                import shutil
+                                # Overwrite without creating backups per user preference
+                                shutil.copy2(src, dst)
+                                # Track overwrite (no backup available to restore)
+                                import_state["actions"].append(("overwritten", dst, None))
+                                copied += 1
+                                log(f"Overwritten: {os.path.relpath(dst, output_dir)}")
+                            else:
+                                # Prioritize existing output file; skip duplicate
+                                skipped += 1
+                                log(f"Skipped (exists): {os.path.relpath(dst, output_dir)}")
+                        else:
+                            import shutil
+                            shutil.copy2(src, dst)
+                            # Track creation for undo
+                            import_state["actions"].append(("created", dst))
+                            copied += 1
+                            log(f"Copied: {os.path.relpath(dst, output_dir)}")
+                    except Exception as e:
+                        errors += 1
+                        log(f"Error copying {src} -> {dst}: {e}")
+
+                    # Update progress
+                    try:
+                        set_progress(idx / total)
+                        if idx % 10 == 0 or idx == total:
+                            set_status(f"Imported {copied}, skipped {skipped}, errors {errors} ({idx}/{total})")
+                    except Exception:
+                        pass
+
+                # Final status
+                set_status(f"Done. Imported {copied}, skipped {skipped}, errors {errors}.")
+                try:
+                    messagebox.showinfo("Import", f"Completed. Imported {copied}, skipped {skipped}, errors {errors}.")
+                except Exception:
+                    pass
+            finally:
+                try:
+                    start_btn.configure(state="normal")
+                    # Enable undo if there were any actions to revert
+                    if import_state.get("actions"):
+                        undo_btn.configure(state="normal")
+                    else:
+                        undo_btn.configure(state="disabled")
+                except Exception:
+                    pass
+
+        # Run worker in background
+        try:
+            th = threading.Thread(target=worker, daemon=True)
+            th.start()
+        except Exception as e:
+            try:
+                messagebox.showerror("Import", f"Failed to start import: {e}")
+            except Exception:
+                pass
+
+    def _start_undo_worker(self, dialog, prog, prog_label, log_box, undo_btn, start_btn, import_state):
+        actions = list(import_state.get("actions") or [])
+        backup_root = import_state.get("backup_root")
+        if not actions:
+            try:
+                messagebox.showinfo("Undo", "Nothing to undo.")
+            except Exception:
+                pass
+            return
+
+        # Disable buttons during undo
+        try:
+            undo_btn.configure(state="disabled")
+            start_btn.configure(state="disabled")
+        except Exception:
+            pass
+
+        def log(msg):
+            try:
+                log_box.insert("end", f"{msg}\n")
+                log_box.see("end")
+            except Exception:
+                pass
+
+        def set_status(text):
+            try:
+                prog_label.configure(text=text)
+            except Exception:
+                pass
+
+        def set_progress(value):
+            try:
+                prog.set(value)
+            except Exception:
+                pass
+
+        def safe_rmdir_empty_dirs(path, stop_at):
+            try:
+                path = os.path.abspath(path)
+                stop_at = os.path.abspath(stop_at)
+                while path.startswith(stop_at) and path != stop_at:
+                    try:
+                        os.rmdir(path)
+                    except OSError:
+                        break
+                    path = os.path.dirname(path)
+            except Exception:
+                pass
+
+        def worker():
+            try:
+                total = len(actions)
+                undone = 0
+                errors = 0
+                set_status(f"Undoing last import ({total} action(s))...")
+
+                # Undo in reverse order
+                for idx, action in enumerate(reversed(actions), start=1):
+                    try:
+                        if not action:
+                            continue
+                        if action[0] == "created":
+                            _, dst = action
+                            if os.path.isfile(dst):
+                                try:
+                                    os.remove(dst)
+                                    log(f"Removed created file: {dst}")
+                                except Exception as e:
+                                    errors += 1
+                                    log(f"Error removing {dst}: {e}")
+                                # Attempt to clean up empty directories up to dialog's output dir if known
+                                safe_rmdir_empty_dirs(os.path.dirname(dst), stop_at=os.path.dirname(dst))
+                        elif action[0] == "overwritten":
+                            _, dst, backup_path = action
+                            try:
+                                # Without backups, we cannot restore originals; just inform the user
+                                log(f"Cannot restore overwritten file (no backup): {dst}")
+                            except Exception as e:
+                                errors += 1
+                                log(f"Error handling overwritten entry {dst}: {e}")
+                        undone += 1
+                    finally:
+                        # Progress update
+                        try:
+                            set_progress(idx / total)
+                            if idx % 10 == 0 or idx == total:
+                                set_status(f"Undo progress: {undone}/{total}, errors {errors}")
+                        except Exception:
+                            pass
+
+                # No backup root management needed if no backups created
+
+                set_status(f"Undo completed. Undone {undone} action(s), errors {errors}.")
+                # Clear state
+                import_state["actions"] = []
+                import_state["backup_root"] = None
+                try:
+                    messagebox.showinfo("Undo", f"Undo completed. Undone {undone} action(s), errors {errors}.")
+                except Exception:
+                    pass
+            finally:
+                try:
+                    start_btn.configure(state="normal")
+                    undo_btn.configure(state="disabled")
+                except Exception:
+                    pass
+
+        try:
+            th = threading.Thread(target=worker, daemon=True)
+            th.start()
+        except Exception as e:
+            try:
+                messagebox.showerror("Undo", f"Failed to start undo: {e}")
+            except Exception:
+                pass
 
     def create_tasks_section(self):
         """Create the tasks management section for multiple concurrent downloads"""
@@ -1000,6 +1527,10 @@ class TaskItem:
         # M3U tracking for finalization
         self._m3u_playlist_dir = None
         self._m3u_playlist_title = None
+        # Playlist context for clearer logs
+        self._current_playlist_title = None
+        self._current_playlist_total = 0
+        self._is_playlist_task = False
 
         # Header row with title and remove button
         header = ctk.CTkFrame(self.frame, fg_color="transparent")
@@ -1087,6 +1618,7 @@ class TaskItem:
         # Internal tracking for throttled logging
         self._last_logged_progress = 0
         self._last_logged_filename = ""
+        self._logged_item_filenames = set()
 
     def _run_on_ui(self, fn):
         """Schedule a callable to run on the Tk main thread safely."""
@@ -1165,6 +1697,7 @@ class TaskItem:
 
         # Detect playlist for early feedback
         is_playlist = self._is_playlist_url(url)
+        self._is_playlist_task = bool(is_playlist)
         if is_playlist:
             self.progress_text.configure(text="📑 Detected playlist - preparing...")
             self.log("📑 Detected playlist URL - will download all videos")
@@ -1183,11 +1716,17 @@ class TaskItem:
         self._last_logged_progress = 0
         self._last_logged_filename = ""
         self._aborted = False
-        self.log("🚀 Starting download...")
+        # Context log for clarity across multiple tasks
+        try:
+            cookie_file_cfg = self.ui.config.get("cookie_file", "") or ""
+            cookie_used = cookie_file_cfg.strip()
+        except Exception:
+            cookie_used = ""
+        self.log(f"🚀 Starting download | URL: {url}\n   Format: {'audio' if is_audio else 'video'} | Output: {output_dir}\n   Cookies: {'yes' if cookie_used else 'no'}")
 
         def worker():
             try:
-                # Try to get quick playlist size for UX
+                # Try to get quick playlist size and title for UX
                 if is_playlist:
                     try:
                         with yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True}) as ydl:
@@ -1195,6 +1734,13 @@ class TaskItem:
                             if info and 'entries' in info:
                                 valid_entries = [e for e in info['entries'] if e is not None]
                                 total = len(valid_entries)
+                                # Capture playlist title for clearer logs
+                                pl_title = info.get('title', 'Unknown Playlist')
+                                # Store for end-of-download logging
+                                self._current_playlist_title = pl_title
+                                self._current_playlist_total = total
+                                # Log a clear start banner for the playlist
+                                self.ui.root.after(0, lambda: self.log(f"📑 Playlist start: {pl_title} ({total} videos)"))
                                 self.ui.root.after(0, lambda: self._set_progress_text_safe(f"📋 Playlist: {total} videos"))
 
                                 # Pre-create playlist directory and reconcile existing M3U if requested
@@ -1308,7 +1854,7 @@ class TaskItem:
         if not self._is_alive():
             return
         try:
-            if d['status'] == 'downloading':
+            if d.get('status') == 'downloading':
                 # Compute progress safely off the UI thread
                 if d.get('total_bytes'):
                     downloaded = d.get('downloaded_bytes', 0)
@@ -1335,6 +1881,22 @@ class TaskItem:
                 self._run_on_ui(lambda: self.progress_bar.set(progress))
                 self._set_progress_text_safe(status_text)
 
+                # Per-item start log (once per file)
+                try:
+                    if filename and filename not in self._logged_item_filenames:
+                        info = d.get('info_dict', {}) or {}
+                        pl_idx = info.get('playlist_index')
+                        n_entries = info.get('n_entries') or info.get('playlist_count') or self._current_playlist_total or None
+                        vid_title = info.get('title') or filename
+                        pl_title = info.get('playlist_title') or info.get('playlist') or self._current_playlist_title or None
+                        if pl_idx and n_entries:
+                            self.log(f"▶ Starting: [{int(pl_idx)}/{int(n_entries)}] {vid_title}" + (f" — Playlist: {pl_title}" if pl_title else ""))
+                        else:
+                            self.log(f"▶ Starting: {vid_title}")
+                        self._logged_item_filenames.add(filename)
+                except Exception:
+                    pass
+
                 # Throttled logging
                 progress_percent = progress * 100
                 if (progress_percent - self._last_logged_progress >= 5.0 or filename != self._last_logged_filename):
@@ -1342,10 +1904,20 @@ class TaskItem:
                     self._last_logged_progress = progress_percent
                     self._last_logged_filename = filename
 
-            elif d['status'] == 'finished':
+            elif d.get('status') == 'finished':
                 filename = os.path.basename(d.get('filename', '')).rsplit('.', 1)[0]
                 self._set_progress_text_safe(f"Processing: {filename}")
                 self.log(f"🔄 Processing: {filename}")
+                # Per-item finish log with index if available
+                try:
+                    info = d.get('info_dict', {}) or {}
+                    pl_idx = info.get('playlist_index')
+                    n_entries = info.get('n_entries') or info.get('playlist_count') or self._current_playlist_total or None
+                    vid_title = info.get('title') or filename
+                    if pl_idx and n_entries:
+                        self.log(f"✅ Finished item: [{int(pl_idx)}/{int(n_entries)}] {vid_title}")
+                except Exception:
+                    pass
                 self._last_logged_progress = 0
                 self._last_logged_filename = ""
 
@@ -1355,7 +1927,16 @@ class TaskItem:
                 except Exception:
                     pass
 
-            elif d['status'] == 'error':
+            # Postprocessor hooks deliver final filepaths
+            elif d.get('status') == 'postprocessor':
+                try:
+                    # Some postprocessors report 'filepath' field
+                    if d.get('info_dict') or d.get('filepath'):
+                        self._maybe_update_m3u(d)
+                except Exception:
+                    pass
+
+            elif d.get('status') == 'error':
                 error_msg = d.get('error', 'Unknown error')
                 self._set_progress_text_safe(f"Error: {error_msg}")
                 self.log(f"❌ Error: {error_msg}")
@@ -1366,6 +1947,35 @@ class TaskItem:
         if not self._is_alive():
             return
         try:
+            # Final playlist banner for clarity
+            try:
+                if self._is_playlist_task:
+                    pl_title = self._current_playlist_title or "Playlist"
+                    # Attempt to summarize counts from downloader if available
+                    progress = {}
+                    try:
+                        progress = self.downloader.get_playlist_progress() or {}
+                    except Exception:
+                        progress = {}
+                    total = progress.get('total', self._current_playlist_total)
+                    downloaded = progress.get('downloaded')
+                    failed = progress.get('failed')
+                    skipped = progress.get('skipped')
+                    summary_bits = []
+                    if downloaded is not None:
+                        summary_bits.append(f"downloaded {downloaded}")
+                    if skipped is not None:
+                        summary_bits.append(f"skipped {skipped}")
+                    if failed is not None:
+                        summary_bits.append(f"failed {failed}")
+                    summary = (", ".join(summary_bits)) if summary_bits else ""
+                    if total:
+                        self.log(f"📦 Playlist end: {pl_title} ({total} videos){' — ' + summary if summary else ''}")
+                    else:
+                        self.log(f"📦 Playlist end: {pl_title}{' — ' + summary if summary else ''}")
+            except Exception:
+                pass
+
             error_summary = self.downloader.get_error_summary()
             if success:
                 if error_summary:
@@ -1494,10 +2104,16 @@ class TaskItem:
 
             # Prepare lines (relative paths)
             lines = []
+            included_abs_paths = set()
             for _, meta in ordered:
                 path = meta.get('path')
                 if not path or not os.path.exists(path):
                     continue
+                try:
+                    abs_path = os.path.abspath(path)
+                    included_abs_paths.add(abs_path)
+                except Exception:
+                    pass
                 # For parent placement, keep paths relative to the M3U file location
                 try:
                     target_m3u_dir = os.path.dirname(self._m3u_path(directory, state.get("playlist_title")))
@@ -1505,6 +2121,52 @@ class TaskItem:
                 except Exception:
                     rel = path
                 lines.append(rel.replace('\\', '/'))
+
+            # Also append any temp extras captured without an index
+            try:
+                for k, meta in list(state.get('entries', {}).items()):
+                    if not isinstance(k, str) or not k.startswith('_extra_'):
+                        continue
+                    path = meta.get('path')
+                    if not path or not os.path.exists(path):
+                        continue
+                    try:
+                        abs_path = os.path.abspath(path)
+                        if abs_path in included_abs_paths:
+                            continue
+                        included_abs_paths.add(abs_path)
+                        target_m3u_dir = os.path.dirname(self._m3u_path(directory, state.get("playlist_title")))
+                        rel = os.path.relpath(path, target_m3u_dir)
+                    except Exception:
+                        rel = path
+                    lines.append(rel.replace('\\', '/'))
+            except Exception:
+                pass
+
+            # Fallback: append any media files present in directory but missing from expected list
+            try:
+                media_exts = ('.mp3', '.m4a', '.flac', '.ogg', '.wav', '.mp4', '.mkv', '.webm')
+                dir_entries = []
+                for fn in os.listdir(directory):
+                    fp = os.path.join(directory, fn)
+                    if os.path.isfile(fp) and fn.lower().endswith(media_exts):
+                        try:
+                            abs_fp = os.path.abspath(fp)
+                            if abs_fp not in included_abs_paths:
+                                dir_entries.append(fp)
+                        except Exception:
+                            pass
+                # Deterministic order for extras: alphabetical by filename
+                dir_entries.sort(key=lambda p: os.path.basename(p).lower())
+                for fp in dir_entries:
+                    try:
+                        target_m3u_dir = os.path.dirname(self._m3u_path(directory, state.get("playlist_title")))
+                        rel = os.path.relpath(fp, target_m3u_dir)
+                    except Exception:
+                        rel = fp
+                    lines.append(rel.replace('\\', '/'))
+            except Exception:
+                pass
 
             m3u_file = self._m3u_path(directory, state.get("playlist_title"))
             with open(m3u_file, 'w', encoding='utf-8') as f:
@@ -1572,10 +2234,10 @@ class TaskItem:
 
         info = d.get('info_dict', {}) or {}
         pl_index = info.get('playlist_index')
-        if not pl_index:
-            return
+        # Accept zero/None indices in postprocessor stage, but prefer explicit playlist_index
+        # If no playlist_index, try to derive from state later; for now, still record the path
         # Prefer final filepath reported by postprocessor; fallback to filename
-        final_path = info.get('filepath') or d.get('filename')
+        final_path = info.get('filepath') or d.get('filepath') or d.get('filename')
         if not final_path:
             return
         directory = os.path.dirname(final_path)
@@ -1594,11 +2256,22 @@ class TaskItem:
                     state['total_entries'] = max(int(total), int(state.get('total_entries', 0) or 0))
                 except Exception:
                     pass
-            state.setdefault('entries', {})[str(int(pl_index))] = {
-                'id': video_id,
-                'title': title,
-                'path': final_path
-            }
+            entries = state.setdefault('entries', {})
+            if pl_index:
+                key = str(int(pl_index))
+                entries[key] = {
+                    'id': video_id,
+                    'title': title,
+                    'path': final_path
+                }
+            else:
+                # No index available; temporarily store under a special key to be appended later
+                tmp_key = f"_extra_{video_id or os.path.basename(final_path)}"
+                entries[tmp_key] = {
+                    'id': video_id,
+                    'title': title,
+                    'path': final_path
+                }
             self._save_state(directory, state)
             self._write_m3u_from_state(directory, playlist_title)
         except Exception:

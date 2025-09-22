@@ -693,6 +693,13 @@ Verify installation: ffmpeg -version
         if progress_callback:
             options['progress_hooks'] = [
                 self._progress_hook(progress_callback)]
+            # Also forward postprocessor events (provides final filepaths after conversion/merge)
+            try:
+                options['postprocessor_hooks'] = [
+                    self._postprocessor_hook(progress_callback)
+                ]
+            except Exception:
+                pass
 
         try:
             # Store output directory for cleanup and reset error tracking
@@ -830,6 +837,21 @@ Verify installation: ffmpeg -version
                     logging.warning(f"Could not restore archive file from backup: {e}")
 
             self._current_ydl = None
+
+    def _postprocessor_hook(self, callback: Callable):
+        """Hook for yt-dlp postprocessors to forward final file paths to UI."""
+        def hook(d):
+            try:
+                # Respect aborts
+                if self._should_abort:
+                    raise KeyboardInterrupt("Download aborted by user")
+            except Exception:
+                pass
+            try:
+                callback(d)
+            except Exception:
+                pass
+        return hook
 
     def _extract_playlist_info(self, url):
         """Extract playlist information to get total video count"""

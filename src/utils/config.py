@@ -32,7 +32,11 @@ class Config:
             "embed_subs": False,
             "playlist_album_override": False,
             "create_m3u": False,
-            "m3u_to_parent": False
+            "m3u_to_parent": False,
+            # Import dialog defaults
+            "last_import_input_dir": "",
+            "last_import_output_dir": "",
+            "import_override_existing": False
         }
         self.settings = self.load_settings()
         # Ensure default output directory exists
