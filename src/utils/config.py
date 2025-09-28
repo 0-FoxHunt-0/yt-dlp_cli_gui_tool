@@ -1,12 +1,21 @@
 import json
 import os
+import shutil
 from pathlib import Path
 
 
 class Config:
     def __init__(self):
-        self.config_dir = Path("config")
+        # Resolve project root independent of current working directory
+        # src/utils/config.py -> utils -> src -> project root
+        self.project_root = Path(__file__).resolve().parent.parent.parent
+
+        # Store config adjacent to the app so it persists regardless of CWD
+        self.config_dir = self.project_root / "config"
         self.config_file = self.config_dir / "settings.json"
+
+        # One-time migration: move legacy config stored in CWD (older versions)
+        self._migrate_legacy_config_locations()
         self.default_settings = {
             "theme": "auto",
             "window_size": "700x600",
@@ -129,7 +138,10 @@ class Config:
     def _get_default_output_directory(self):
         """Get the default output directory path"""
         # Create an 'output' folder in the project root directory
-        project_root = Path(__file__).resolve().parent.parent.parent
+        try:
+            project_root = self.project_root
+        except Exception:
+            project_root = Path(__file__).resolve().parent.parent.parent
         default_dir = project_root / "output"
         return str(default_dir)
 
@@ -151,3 +163,34 @@ class Config:
         self.set("output_directory", default_dir)
         self._ensure_default_output_directory()
         return default_dir
+
+    def _migrate_legacy_config_locations(self):
+        """Migrate settings from legacy CWD-based config folder to project-root config."""
+        try:
+            legacy_dir = Path.cwd() / "config"
+            legacy_file = legacy_dir / "settings.json"
+
+            # Skip if legacy equals new location or legacy doesn't exist
+            if not legacy_file.exists():
+                return
+            try:
+                if legacy_file.resolve() == self.config_file.resolve():
+                    return
+            except Exception:
+                # If resolve fails, continue with best-effort migration
+                pass
+
+            # Only migrate if target doesn't already exist
+            if self.config_file.exists():
+                return
+
+            self.config_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                # Prefer moving to avoid duplicates
+                shutil.move(str(legacy_file), str(self.config_file))
+            except Exception:
+                # Fallback to copy if move fails (e.g., cross-device)
+                shutil.copy2(str(legacy_file), str(self.config_file))
+        except Exception:
+            # Non-fatal; continue without blocking app startup
+            pass

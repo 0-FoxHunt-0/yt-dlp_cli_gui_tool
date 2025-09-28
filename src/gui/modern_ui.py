@@ -6,6 +6,7 @@ import sys
 import json
 import re
 import difflib
+from pathlib import Path
 from tkinter import filedialog, messagebox
 from ..core.downloader import Downloader
 from ..utils.config import Config
@@ -42,10 +43,19 @@ class ModernUI:
         self.root.geometry("800x750")
         self.root.minsize(400, 450)
         
-        # Set window icon (if available)
+        # Set window icon (resolve relative to project root with fallback)
         try:
-            self.root.iconbitmap("icon.ico")
-        except:
+            project_root = Path(__file__).resolve().parent.parent.parent
+            icon_candidates = [
+                project_root / "icon.ico",
+                project_root / "assets" / "icon.ico",
+                Path.cwd() / "icon.ico",
+            ]
+            for candidate in icon_candidates:
+                if candidate.exists():
+                    self.root.iconbitmap(str(candidate))
+                    break
+        except Exception:
             pass
         
         # Create and pack the GUI elements
