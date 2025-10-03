@@ -273,7 +273,7 @@ class TaskItem:
                 if cookie_file:
                     cookie_file = cookie_file.strip()
 
-                self.downloader.download(
+                result_code = self.downloader.download(
                     url=url,
                     output_path=output_dir,
                     is_audio=is_audio,
@@ -283,11 +283,14 @@ class TaskItem:
                     cookie_file=cookie_file if cookie_file else None,
                     force_playlist_redownload=metadata_options.get('force_playlist_redownload', False)
                 )
-                self.ui.root.after(0, lambda: self._completed(True, "Download completed successfully!"))
+                # Consider success only if yt-dlp returned 0 (no errors)
+                is_success = (result_code == 0) or (is_playlist and result_code in (0, None))
+                self.ui.root.after(0, lambda: self._completed(is_success, "Download completed successfully!" if is_success else "Download failed"))
             except Exception as e:
                 # Normalize aborts vs errors
                 msg = str(e) if e is not None else ""
-                if (msg and 'aborted' in msg.lower()) or self._aborted or getattr(self.downloader, '_should_abort', False):
+                # Only treat as user abort if an explicit abort was requested
+                if (msg and 'aborted' in msg.lower()) and getattr(self.downloader, '_user_abort_requested', False):
                     self.ui.root.after(0, lambda: self._completed(False, "Download aborted by user"))
                 else:
                     display = msg if msg else "Unknown error"
@@ -478,10 +481,6 @@ class TaskItem:
                 if error_summary:
                     self._set_progress_text_safe("⚠️ Completed with issues")
                     self.log(f"⚠️ Completed with issues: {error_summary}")
-                    try:
-                        messagebox.showwarning("Completed with Issues", f"Download completed but some videos had issues:\n{error_summary}\n\nCheck the error report in the output folder for details.")
-                    except Exception:
-                        pass
                 else:
                     self._set_progress_text_safe("✅ Completed")
                     self.log(f"✅ {message}")
@@ -496,10 +495,7 @@ class TaskItem:
                     else:
                         self._set_progress_text_safe("❌ Failed")
                         self.log(f"❌ {message}")
-                    try:
-                        messagebox.showerror("Error", message)
-                    except Exception:
-                        pass
+                # Do not show modal error popups; errors are logged in the task terminal only
 
             # Restore buttons/state
             try:

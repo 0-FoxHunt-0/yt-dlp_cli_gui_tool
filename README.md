@@ -111,11 +111,77 @@ The application automatically creates a `config/settings.json` file to store use
 
 Settings are automatically saved and restored between sessions.
 
+## Docker-based Proof-of-Origin (PO) Token Provider (Optional)
+
+This app can automatically start and use the community POT provider for yt-dlp to improve access to restricted formats when YouTube enforces additional checks.
+
+- Provider: `bgutil-ytdlp-pot-provider` (Docker image)
+- Reference: <https://github.com/Brainicism/bgutil-ytdlp-pot-provider>
+
+### How it works
+
+- Detects Docker and the Docker daemon at runtime
+- Ensures a provider container is running (starts existing or creates a new one)
+- Waits until the provider’s HTTP server is ready
+- Wires yt-dlp `--extractor-args` to use the provider automatically
+- Falls back cleanly without PO tokens if any step fails
+
+### Configuration options
+
+The `config/settings.json` contains a `pot_provider` section:
+
+```json
+{
+  "pot_provider": {
+    "enabled": true,
+    "method": "docker",
+    "docker_image": "brainicism/bgutil-ytdlp-pot-provider",
+    "docker_container_name": "bgutil-provider",
+    "docker_port": 4416,
+    "base_url": "http://127.0.0.1:4416",
+    "disable_innertube": false
+  }
+}
+```
+
+- `enabled`: toggle provider integration on/off
+- `docker_image`, `docker_container_name`, `docker_port`: override defaults
+- `base_url`: override if you map a different host/port
+- `disable_innertube`: passes `disable_innertube=1` to provider extractor args if true
+
+### Manual PO token (optional)
+
+You can also provide a manual PO token via environment variable:
+
+```bash
+# Example token format: mweb.gvs+XXXX
+set YT_PO_TOKEN=mweb.gvs+XXXX  # Windows (cmd)
+export YT_PO_TOKEN=mweb.gvs+XXXX  # PowerShell/Core or Unix shells
+```
+
+If set, yt-dlp will include it as `--extractor-args "youtube:po_token=..."`.
+
+### Prerequisites
+
+- Docker Desktop or Docker Engine must be installed and running.
+- If Docker is not available or the container fails to start, the app logs a warning and continues without PO tokens.
+
+### Notes
+
+- This is a best-effort enhancement. It may not bypass all restrictions.
+- The provider container is started with `--restart unless-stopped` and mapped to `127.0.0.1:<port>`.
+- Health is checked with an exponential backoff (up to ~30s) prior to wiring yt-dlp.
+
+### Provider lifecycle
+
+- On app start, the provider container is started automatically if Docker is available and the feature is enabled.
+- On app exit, the container is stopped if `pot_provider.stop_on_exit` is `true` (default).
+
 ## Troubleshooting
 
-### If you get import errors:
+### Common issues
 
 1. Make sure you're in the project directory
-2. Install requirements: `pip install -r requirements.txt`
-3. Try running: `python main.py`
-4. For audio-only MP3, FFmpeg must be installed and on PATH.
+2. Install requirements with `pip install -r requirements.txt`
+3. Try running `python main.py`
+4. For audio-only MP3, FFmpeg must be installed and on PATH

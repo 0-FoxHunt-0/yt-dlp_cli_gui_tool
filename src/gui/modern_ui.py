@@ -1271,7 +1271,15 @@ class ModernUI:
     # ===== Multi-task controls =====
     def add_task(self, url: str = ""):
         """Add a new task row (optionally with preset URL)"""
-        default_output = self.config.get("output_directory", self.config.get_default_output_directory())
+        # Default to the process current working directory for newly added tasks
+        # but keep config-based defaults when restoring from saved state
+        if not getattr(self, '_restoring_tasks', False):
+            try:
+                default_output = os.getcwd()
+            except Exception:
+                default_output = self.config.get("output_directory", self.config.get_default_output_directory())
+        else:
+            default_output = self.config.get("output_directory", self.config.get_default_output_directory())
         task = TaskItem(self, parent_frame=self.tasks_list_frame, default_output=default_output)
         self.tasks.append(task)
         # Set URL if provided

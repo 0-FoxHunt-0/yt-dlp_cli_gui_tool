@@ -48,6 +48,19 @@ class Config:
             "last_import_input_dir": "",
             "last_import_output_dir": "",
             "import_override_existing": False
+            ,
+            # Proof-of-Origin (POT) provider via Docker (bgutil)
+            "pot_provider": {
+                "enabled": True,
+                "method": "docker",  # docker | script (not implemented yet)
+                "docker_image": "brainicism/bgutil-ytdlp-pot-provider",
+                "docker_container_name": "bgutil-provider",
+                "docker_port": 4416,
+                "base_url": "http://127.0.0.1:4416",
+                "disable_innertube": True,
+                "stop_on_exit": True,
+                "readiness_timeout_secs": 45
+            }
         }
         self.settings = self.load_settings()
         # Ensure default output directory exists

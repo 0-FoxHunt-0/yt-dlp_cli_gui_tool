@@ -13,6 +13,8 @@ from src.utils.log_cleaner import cleanup_logs
 from .support.errors import user_friendly_youtube_error, ffmpeg_instructions
 from .support.cleanup import collect_incomplete_files, remove_files
 from .support.playlist import extract_playlist_count_and_title
+import time
+from .support.pot_provider import POTProviderManager
 
 
 class Downloader:
@@ -41,6 +43,8 @@ class Downloader:
         # Download control
         self._should_abort = False
         self._current_ydl = None
+        # Tracks whether the user explicitly requested an abort
+        self._user_abort_requested = False
 
         # Track active downloads for cleanup
         self._active_download_files = set()
@@ -78,6 +82,14 @@ class Downloader:
 
         # Check if FFmpeg is available
         self.ffmpeg_available = self._check_ffmpeg()
+        # POT provider manager
+        self._pot_manager = POTProviderManager(self.config)
+        # Ensure provider is stopped on process exit if configured
+        try:
+            import atexit
+            atexit.register(lambda: self._pot_manager.stop_container_if_configured())
+        except Exception:
+            pass
 
         # Set environment variables to handle encoding issues
         os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
@@ -135,6 +147,12 @@ class Downloader:
             # Cookie handling (resolved per-run based on config)
             'cookiefile': None,
             'cookiesfrombrowser': None,
+            # Prefer default tv/ios clients, then try mweb as per upstream guidance
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['default', 'mweb']
+                }
+            },
             # FFmpeg merging behavior
             'merge_output_format': 'mp4',  # Ensure consistent output format
             'prefer_ffmpeg': True,  # Use FFmpeg for better format handling
@@ -161,6 +179,8 @@ class Downloader:
             # Fallback options without FFmpeg
             self.base_options['postprocessors'] = []
             logging.warning("FFmpeg not found. Audio conversion and metadata embedding will be disabled.")
+
+    # Docker POT provider helpers were refactored into POTProviderManager
 
     def _check_ffmpeg(self):
         """Check if FFmpeg is available in the system PATH"""
@@ -201,6 +221,10 @@ class Downloader:
                  progress_callback: Optional[Callable] = None,
                  cookie_file: str = None,
                  force_playlist_redownload: bool = False):
+
+        # Reset abort flags for a fresh download attempt
+        self._user_abort_requested = False
+        self._should_abort = False
 
         options = self.base_options.copy()
 
@@ -247,8 +271,7 @@ class Downloader:
                     # Store original title for metadata (before sanitization)
                     # This is the exact playlist name from YouTube's API response
                     playlist_title_for_metadata = playlist_title
-                    # Sanitize playlist title for folder name
-                    import re
+                    # Sanitize playlist title for folder name (use module-level re)
                     playlist_title = re.sub(r'[<>:"/\\|?*]', '_', playlist_title)
                     output_path = os.path.join(output_path, playlist_title)
                     os.makedirs(output_path, exist_ok=True)
@@ -624,14 +647,80 @@ class Downloader:
             self._cleanup_incomplete_files()
 
             # Try download with primary configuration
-            # Resolve cookies-from-browser default (Brave) unless a cookie file is provided
+            # Resolve cookies-from-browser if no cookie file is provided
             try:
                 if not options.get('cookiefile'):
                     if self.config.get('use_cookies_from_browser', True):
                         browser_name = self.config.get('cookies_from_browser', 'brave')
-                        options['cookiesfrombrowser'] = browser_name
+                        # Pass browser name as a tuple to avoid parsing errors
+                        options['cookiesfrombrowser'] = (browser_name,)
+                        logging.info(f"Using cookies from browser: {browser_name}")
+                    else:
+                        logging.info("Browser cookies disabled in configuration")
+                else:
+                    logging.info("Using cookie file, skipping browser cookies")
+            except Exception as e:
+                # Provide better error message for browser cookie issues
+                if "unsupported browser" in str(e):
+                    logging.warning(f"Browser '{self.config.get('cookies_from_browser', 'brave')}' not supported or not installed. Continuing without browser cookies.")
+                elif "failed to load cookies" in str(e):
+                    logging.warning("Browser cookies could not be loaded (browser may not be installed). Continuing without browser cookies.")
+                else:
+                    logging.warning(f"Error setting up browser cookies: {e}. Continuing without browser cookies.")
+
+            # If user supplied a PO token in environment, pass it through to extractor
+            # Example: set YT_PO_TOKEN="mweb.gvs+XXX" to try mweb client with token
+            try:
+                po_token = os.environ.get('YT_PO_TOKEN', '').strip()
+                if po_token:
+                    if 'extractor_args' not in options:
+                        options['extractor_args'] = {}
+                    ya = options['extractor_args'].setdefault('youtube', {})
+                    ya['po_token'] = [po_token]
+                    logging.info('Using user-supplied PO Token for YouTube client')
             except Exception:
                 pass
+
+            # Attempt to enable external PO Token provider via Docker (bgutil)
+            try:
+                base_url = self._pot_manager.maybe_enable_provider(options)
+                if base_url:
+                    logging.info(f"POT provider active at {base_url}; expecting yt-dlp to fetch tokens via provider")
+                    # When provider is active, enable yt-dlp verbose logs to capture plugin output
+                    options['quiet'] = False
+                    options['no_warnings'] = False
+                    # Force plugin path usage by preferring mweb first (works better with provider)
+                    try:
+                        ya = options.setdefault('extractor_args', {}).setdefault('youtube', {})
+                        ya['player_client'] = ['mweb', 'default', 'ios', 'android', 'tv']
+                        logging.info("Adjusted youtube.player_client to include ['mweb','default','ios','android','tv'] while provider is active")
+                    except Exception:
+                        pass
+                    # Strong hint to try HTTP provider first (list-of-strings syntax)
+                    try:
+                        ye = options.setdefault('extractor_args', {})
+                        ye['youtubepot'] = ['preferred_providers=bgutil_http,script']
+                        logging.info("Set extractor_args['youtubepot'] to prefer bgutil_http")
+                    except Exception:
+                        pass
+                else:
+                    # POT provider not available - ensure no youtubepot interference
+                    try:
+                        if 'extractor_args' in options and 'youtubepot' in options['extractor_args']:
+                            del options['extractor_args']['youtubepot']
+                            logging.info("Removed youtubepot extractor_args as POT provider is disabled")
+                    except Exception:
+                        pass
+            except Exception as e:
+                logging.warning(f"POT provider setup failed, falling back without PO tokens: {e}")
+                # Docker/provider unavailable - don't interfere with normal YouTube extraction
+                # Remove any youtubepot args that might have been set previously
+                try:
+                    if 'extractor_args' in options and 'youtubepot' in options['extractor_args']:
+                        del options['extractor_args']['youtubepot']
+                        logging.info("Removed youtubepot extractor_args due to POT provider unavailability")
+                except Exception:
+                    pass
 
             result = self._try_download_with_fallback(url, options, output_path)
 
@@ -717,6 +806,26 @@ class Downloader:
                 user_friendly_msg = user_friendly_youtube_error(error_msg)
                 logging.error(f"YouTube access error: {user_friendly_msg}")
                 raise Exception(f"YouTube Access Error: {user_friendly_msg}\n\nOriginal error: {error_msg}")
+
+            # Log extra hints if POT provider is active but token missing in yt-dlp
+            if '[GetPOT]' in error_msg or 'po token' in error_msg_lower:
+                logging.warning("POT provider may be active but yt-dlp plugin did not return a token. Ensure the plugin is installed in the app's venv and visible in yt-dlp -v output.")
+
+            # Attempt best-available + manual FFmpeg conversion fallback for format issues
+            format_error_clues = [
+                'requested format is not available',
+                'only images are available',
+                'nsig extraction failed',
+                'some web client https formats have been skipped',
+            ]
+            if any(clue in error_msg_lower for clue in format_error_clues):
+                logging.warning("Primary and basic fallbacks failed due to format restrictions. Trying best-available + FFmpeg conversion fallback...")
+                try:
+                    self._fallback_best_available_then_convert(url, output_path, is_audio, cookie_file)
+                    logging.info("✅ Fallback succeeded via best-available format + FFmpeg conversion")
+                    return 0
+                except Exception as fe:
+                    logging.error(f"Fallback conversion failed: {fe}")
 
             # Network-related errors
             elif any(error_type in error_msg_lower for error_type in [
@@ -943,6 +1052,7 @@ class Downloader:
 
     def abort_download(self):
         """Abort the current download"""
+        self._user_abort_requested = True
         self._should_abort = True
         logging.info("Download abort requested by user")
 
@@ -1126,6 +1236,105 @@ class Downloader:
         except Exception as e:
             logging.warning(f"Error during embedded thumbnail cleanup: {e}")
 
+    def _fallback_best_available_then_convert(self, url: str, output_path: str, is_audio: bool, cookie_file: Optional[str]):
+        """Download best-available format then convert to desired output using FFmpeg if needed.
+
+        - For audio: download bestaudio/best, then convert to MP3 with FFmpeg.
+        - For video: download best[ext=mp4]/bestvideo*+bestaudio/best, then convert/remux to MP4.
+        """
+        # Step 1: Download best-available file without postprocessing constraints
+        temp_options = self.base_options.copy()
+        temp_options['quiet'] = True
+        temp_options['no_warnings'] = True
+        temp_options['ignoreerrors'] = False
+        temp_options['continue_dl'] = True
+        # Avoid our usual postprocessors; we will do manual FFmpeg conversion
+        temp_options['postprocessors'] = []
+        if cookie_file and os.path.exists(cookie_file):
+            temp_options['cookiefile'] = cookie_file
+        else:
+            temp_options['cookiefile'] = None
+        # Select broad format that tends to succeed more often
+        if is_audio:
+            temp_options['format'] = 'bestaudio/best'
+        else:
+            temp_options['format'] = 'best[ext=mp4]/bestvideo*+bestaudio/best'
+        # Ensure template in target dir
+        temp_template = os.path.join(output_path, '%(title)s.%(ext)s')
+        temp_options['outtmpl'] = temp_template
+        temp_options['download_archive'] = os.path.join(output_path, 'archive.txt')
+
+        downloaded_file = {'path': None}
+
+        def capture_postprocessor_info(d):
+            try:
+                if d.get('status') == 'finished' and d.get('filename'):
+                    downloaded_file['path'] = d.get('filename')
+            except Exception:
+                pass
+
+        try:
+            with yt_dlp.YoutubeDL(temp_options) as ydl:
+                self._current_ydl = ydl
+                ydl.add_progress_hook(capture_postprocessor_info)
+                ydl.download([url])
+        finally:
+            self._current_ydl = None
+
+        src_path = downloaded_file['path']
+        if not src_path or not os.path.exists(src_path):
+            raise Exception('Fallback download did not produce a file to convert')
+
+        # Step 2: Convert/remux with FFmpeg to target format
+        if is_audio:
+            target_ext = 'mp3'
+        else:
+            target_ext = 'mp4'
+        base_name = os.path.splitext(os.path.basename(src_path))[0]
+        dst_path = os.path.join(os.path.dirname(src_path), f"{base_name}.{target_ext}")
+
+        # If already correct extension, skip conversion
+        if src_path.lower().endswith(f".{target_ext}"):
+            return
+
+        if not self.ffmpeg_available:
+            raise Exception('FFmpeg not available for fallback conversion')
+
+        # Build FFmpeg command
+        if is_audio:
+            cmd = [
+                'ffmpeg', '-y', '-i', src_path,
+                '-vn',
+                '-c:a', 'libmp3lame',
+                '-q:a', '0',
+                dst_path
+            ]
+        else:
+            # Try stream copy for video where possible; if it fails, re-encode is left to FFmpeg defaults
+            cmd = [
+                'ffmpeg', '-y', '-i', src_path,
+                '-c', 'copy',
+                '-movflags', '+faststart',
+                dst_path
+            ]
+
+        result = subprocess.run(cmd, capture_output=True)
+        try:
+            stdout = result.stdout.decode('utf-8', errors='replace')
+            stderr = result.stderr.decode('utf-8', errors='replace')
+        except Exception:
+            stdout = str(result.stdout)
+            stderr = str(result.stderr)
+
+        if result.returncode != 0 or not os.path.exists(dst_path):
+            raise Exception(f"FFmpeg conversion failed: {stderr[:400]}")
+
+        # Optionally clean up source file after successful conversion
+        try:
+            os.remove(src_path)
+        except Exception:
+            pass
+
     def _generate_error_report(self):
         """Generate a report of failed/skipped videos"""
         if not self.failed_videos and not self.skipped_videos:
@@ -1169,6 +1378,35 @@ class Downloader:
             {},
             # Fallback 1: Simple configuration without extractor_args
             {},
+            # Fallback A: Relax to bestaudio/best selection with MP4 preference
+            {
+                'format': 'bestaudio/best',
+                'merge_output_format': 'mp3' if options.get('extractaudio') else 'mp4',
+            },
+            # Client fallback: try iOS client
+            {
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['ios','default','mweb']
+                    }
+                }
+            },
+            # Client fallback: try Android client
+            {
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['android','default','mweb']
+                    }
+                }
+            },
+            # Client fallback: try TV client
+            {
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['tv','default','mweb']
+                    }
+                }
+            },
             # Fallback 2: Simple fallback with different user agent
             {
                 'http_headers': {
