@@ -490,6 +490,21 @@ class ModernUI:
                 pass
         finally:
             self._restoring_tasks = False
+
+            # Apply deferred operations after all tasks are created for better performance
+            if tasks_data:
+                try:
+                    # Batch apply colors and bindings to all tasks
+                    for task in self.tasks:
+                        try:
+                            task.finalize_gui_setup()  # Finalize GUI setup first
+                            task.update_colors()
+                            self._attach_task_bindings(task)
+                        except Exception as e:
+                            print(f"Error applying deferred operations to task: {e}")
+                except Exception as e:
+                    print(f"Error during deferred task operations: {e}")
+
             # Don't persist immediately after restore to avoid overwriting restored data
 
     def _attach_task_bindings(self, task):
@@ -1812,11 +1827,17 @@ class ModernUI:
             default_output = self.config.get("output_directory", self.config.get_default_output_directory())
         task = TaskItem(self, parent_frame=self.tasks_list_frame, default_output=default_output)
         self.tasks.append(task)
-        # Update task colors to match current theme
-        task.update_colors()
 
-        # Attach bindings for persistence BEFORE setting URL
-        self._attach_task_bindings(task)
+        # Defer color updates and bindings during bulk restoration for better performance
+        if not getattr(self, '_restoring_tasks', False):
+            # Update task colors to match current theme
+            task.update_colors()
+            # Attach bindings for persistence BEFORE setting URL
+            self._attach_task_bindings(task)
+        else:
+            # During restoration, defer these operations to avoid blocking UI
+            # They will be applied after all tasks are created
+            pass
 
         # Set URL if provided (this will trigger persistence if not restoring)
         try:

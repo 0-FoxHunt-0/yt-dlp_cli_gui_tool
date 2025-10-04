@@ -19,7 +19,7 @@ class TaskItem:
         # Modern color palette (inherited from main UI)
         self.colors = ui.get_current_colors()
 
-        # Create modern task card
+        # Create modern task card - defer packing during restoration for better performance
         self.frame = ctk.CTkFrame(
             parent_frame,
             fg_color=(self.colors['card'], self.colors['card']),
@@ -27,10 +27,13 @@ class TaskItem:
             border_width=1,
             border_color=(self.colors['border'], self.colors['border'])
         )
-        self.frame.pack(fill="x", pady=(0, 15))
 
-        # Per-task state
-        self.downloader = Downloader()
+        # Defer packing during bulk restoration to improve performance
+        if not getattr(self.ui, '_restoring_tasks', False):
+            self.frame.pack(fill="x", pady=(0, 15))
+
+        # Per-task state - Downloader created lazily to improve startup performance
+        self.downloader = None  # Will be created when needed in start()
         self.thread = None
         self.is_running = False
         self._aborted = False
@@ -302,6 +305,23 @@ class TaskItem:
         self._last_logged_filename = ""
         self._logged_item_filenames = set()
 
+    def _get_downloader(self):
+        """Get or create downloader instance lazily"""
+        if self.downloader is None:
+            from ..core.downloader import Downloader
+            self.downloader = Downloader()
+        return self.downloader
+
+    def finalize_gui_setup(self):
+        """Finalize GUI setup after bulk restoration - called once after all tasks are created"""
+        try:
+            if not self.frame.winfo_manager():
+                # Frame wasn't packed during restoration, pack it now
+                self.frame.pack(fill="x", pady=(0, 15))
+        except Exception:
+            # If frame is already packed or there's an error, continue silently
+            pass
+
     def update_video_info(self, url: str = None, force: bool = False):
         """Update video/playlist information when URL changes"""
         if url is None:
@@ -544,7 +564,7 @@ class TaskItem:
                 if cookie_file:
                     cookie_file = cookie_file.strip()
 
-                result_code = self.downloader.download(
+                result_code = self._get_downloader().download(
                     url=url,
                     output_path=output_dir,
                     is_audio=is_audio,
@@ -561,7 +581,7 @@ class TaskItem:
                 # Normalize aborts vs errors
                 msg = str(e) if e is not None else ""
                 # Only treat as user abort if an explicit abort was requested
-                if (msg and 'aborted' in msg.lower()) and getattr(self.downloader, '_user_abort_requested', False):
+                if (msg and 'aborted' in msg.lower()) and getattr(self._get_downloader(), '_user_abort_requested', False):
                     self.ui.root.after(0, lambda: self._completed(False, "Download aborted by user"))
                 else:
                     display = msg if msg else "Unknown error"
@@ -579,7 +599,7 @@ class TaskItem:
                 self._set_progress_text_safe("⏹️ Aborting...")
 
                 # Call downloader abort first
-                self.downloader.abort_download()
+                self._get_downloader().abort_download()
 
                 # Wait a short time for graceful shutdown
                 import time
@@ -772,7 +792,7 @@ class TaskItem:
                     # Attempt to summarize counts from downloader if available
                     progress = {}
                     try:
-                        progress = self.downloader.get_playlist_progress() or {}
+                        progress = self._get_downloader().get_playlist_progress() or {}
                     except Exception:
                         progress = {}
                     total = progress.get('total', self._current_playlist_total)
@@ -794,7 +814,7 @@ class TaskItem:
             except Exception:
                 pass
 
-            error_summary = self.downloader.get_error_summary()
+            error_summary = self._get_downloader().get_error_summary()
             if success:
                 if error_summary:
                     self._set_progress_text_safe("⚠️ Completed with issues")
