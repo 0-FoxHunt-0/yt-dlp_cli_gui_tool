@@ -15,8 +15,19 @@ class TaskItem:
     """Represents a single download task with its own controls, progress, and terminal"""
     def __init__(self, ui: 'ModernUI', parent_frame, default_output: str):
         self.ui = ui
-        self.frame = ctk.CTkFrame(parent_frame)
-        self.frame.pack(fill="x", pady=(0, 10))
+
+        # Modern color palette (inherited from main UI)
+        self.colors = ui.get_current_colors()
+
+        # Create modern task card
+        self.frame = ctk.CTkFrame(
+            parent_frame,
+            fg_color=(self.colors['card'], self.colors['card']),
+            corner_radius=10,
+            border_width=1,
+            border_color=(self.colors['border'], self.colors['border'])
+        )
+        self.frame.pack(fill="x", pady=(0, 15))
 
         # Per-task state
         self.downloader = Downloader()
@@ -32,93 +43,302 @@ class TaskItem:
         self._current_playlist_total = 0
         self._is_playlist_task = False
 
-        # Header row with title and remove button
+        # Modern header with task number and remove button
         header = ctk.CTkFrame(self.frame, fg_color="transparent")
-        header.pack(fill="x", padx=10, pady=(10, 5))
+        header.pack(fill="x", padx=20, pady=(15, 10))
 
-        self.title_label = ctk.CTkLabel(header, text="Task", font=ctk.CTkFont(size=13, weight="bold"))
+        # Left side: Task title and info
+        left_section = ctk.CTkFrame(header, fg_color="transparent")
+        left_section.pack(side="left", fill="y")
+
+        # Task title
+        self.title_label = ctk.CTkLabel(
+            left_section,
+            text="Task 1",
+            font=ctk.CTkFont(size=16, weight="bold", family="Segoe UI"),
+            text_color=(self.colors['text_primary'], self.colors['text_primary'])
+        )
         self.title_label.pack(side="left")
 
-        header_btns = ctk.CTkFrame(header, fg_color="transparent")
-        header_btns.pack(side="right")
+        # Video/Playlist name subtitle
+        self.subtitle_label = ctk.CTkLabel(
+            left_section,
+            text="",
+            font=ctk.CTkFont(size=11, family="Segoe UI"),
+            text_color=(self.colors['text_secondary'], self.colors['text_secondary'])
+        )
+        self.subtitle_label.pack(side="left", padx=(10, 0), pady=(2, 0))
 
-        self.start_btn = ctk.CTkButton(header_btns, text="▶ Start", width=80, height=30, command=self.start)
-        self.start_btn.pack(side="left", padx=(0, 6))
+        # Right side: Icon-only remove button
+        self.remove_btn = ctk.CTkButton(
+            header,
+            text="✕",
+            width=32,
+            height=32,
+            command=lambda: self.ui.remove_task(self),
+            font=ctk.CTkFont(size=14, weight="bold", family="Segoe UI"),
+            fg_color=(self.colors['surface_light'], self.colors['surface']),
+            hover_color=(self.colors['danger'], self.colors['danger']),
+            text_color=(self.colors['text_primary'], self.colors['text_primary']),
+            corner_radius=6
+        )
+        self.remove_btn.pack(side="right")
 
-        self.abort_btn = ctk.CTkButton(header_btns, text="⏹ Abort", width=80, height=30,
-                                       fg_color=("red", "darkred"), hover_color=("darkred", "red"),
-                                       command=self.abort)
-        self.abort_btn.pack(side="left", padx=(0, 6))
-        self.abort_btn.configure(state="disabled")
+        # Modern input sections
+        input_section = ctk.CTkFrame(self.frame, fg_color="transparent")
+        input_section.pack(fill="x", padx=20, pady=(0, 15))
 
-        remove_btn = ctk.CTkButton(header_btns, text="🗑 Remove", width=90, height=30,
-                                   fg_color=("gray70", "gray30"), hover_color=("gray60", "gray40"),
-                                   command=lambda: self.ui.remove_task(self))
-        remove_btn.pack(side="left")
+        # URL row with modern styling
+        url_row = ctk.CTkFrame(input_section, fg_color="transparent")
+        url_row.pack(fill="x", pady=(0, 10))
 
-        # URL row
-        url_row = ctk.CTkFrame(self.frame, fg_color="transparent")
-        url_row.pack(fill="x", padx=10, pady=5)
-
-        url_label = ctk.CTkLabel(url_row, text="URL:")
-        url_label.pack(side="left", padx=(0, 8))
+        url_label = ctk.CTkLabel(
+            url_row,
+            text="🔗 URL:",
+            font=ctk.CTkFont(size=13, weight="bold", family="Segoe UI"),
+            text_color=(self.colors['text_primary'], self.colors['text_primary'])
+        )
+        url_label.pack(side="left", padx=(0, 12))
 
         self.url_var = ctk.StringVar(value="")
-        self.url_entry = ctk.CTkEntry(url_row, textvariable=self.url_var, placeholder_text="https://www.youtube.com/watch?v=...", height=32)
+        self.url_entry = ctk.CTkEntry(
+            url_row,
+            textvariable=self.url_var,
+            placeholder_text="https://www.youtube.com/watch?v=...",
+            height=36,
+            font=ctk.CTkFont(size=12, family="Segoe UI"),
+            corner_radius=8,
+            border_width=2,
+            border_color=(self.colors['border'], self.colors['border'])
+        )
         self.url_entry.pack(side="left", fill="x", expand=True)
 
-        # Format row (per task)
-        fmt_row = ctk.CTkFrame(self.frame, fg_color="transparent")
-        fmt_row.pack(fill="x", padx=10, pady=5)
+        # Format row (per task) with modern styling
+        fmt_row = ctk.CTkFrame(input_section, fg_color="transparent")
+        fmt_row.pack(fill="x", pady=(0, 10))
 
-        fmt_label = ctk.CTkLabel(fmt_row, text="Format:")
-        fmt_label.pack(side="left", padx=(0, 8))
+        fmt_label = ctk.CTkLabel(
+            fmt_row,
+            text="📋 Format:",
+            font=ctk.CTkFont(size=13, weight="bold", family="Segoe UI"),
+            text_color=(self.colors['text_primary'], self.colors['text_primary'])
+        )
+        fmt_label.pack(side="left", padx=(0, 12))
 
         # Use default format from config (global section removed)
         self.format_var = ctk.StringVar(value=self.ui.config.get("default_format", "audio"))
         fmt_radios = ctk.CTkFrame(fmt_row, fg_color="transparent")
         fmt_radios.pack(side="left")
-        audio_radio = ctk.CTkRadioButton(fmt_radios, text="🎵 Audio (MP3)", variable=self.format_var, value="audio")
-        video_radio = ctk.CTkRadioButton(fmt_radios, text="🎬 Video", variable=self.format_var, value="video")
-        audio_radio.pack(side="left", padx=(0, 12))
+
+        audio_radio = ctk.CTkRadioButton(
+            fmt_radios,
+            text="🎵 Audio (MP3)",
+            variable=self.format_var,
+            value="audio",
+            font=ctk.CTkFont(size=12, family="Segoe UI"),
+            text_color=(self.colors['text_primary'], self.colors['text_primary']),
+            hover_color=(self.colors['primary'], self.colors['primary_hover'])
+        )
+        video_radio = ctk.CTkRadioButton(
+            fmt_radios,
+            text="🎬 Video",
+            variable=self.format_var,
+            value="video",
+            font=ctk.CTkFont(size=12, family="Segoe UI"),
+            text_color=(self.colors['text_primary'], self.colors['text_primary']),
+            hover_color=(self.colors['primary'], self.colors['primary_hover'])
+        )
+        audio_radio.pack(side="left", padx=(0, 15))
         video_radio.pack(side="left")
 
-        # Output row
-        out_row = ctk.CTkFrame(self.frame, fg_color="transparent")
-        out_row.pack(fill="x", padx=10, pady=5)
+        # Output row with modern styling
+        out_row = ctk.CTkFrame(input_section, fg_color="transparent")
+        out_row.pack(fill="x", pady=(0, 10))
 
-        out_label = ctk.CTkLabel(out_row, text="Output:")
-        out_label.pack(side="left", padx=(0, 8))
+        out_label = ctk.CTkLabel(
+            out_row,
+            text="📁 Output:",
+            font=ctk.CTkFont(size=13, weight="bold", family="Segoe UI"),
+            text_color=(self.colors['text_primary'], self.colors['text_primary'])
+        )
+        out_label.pack(side="left", padx=(0, 12))
 
         self.output_var = ctk.StringVar(value=default_output)
-        self.output_entry = ctk.CTkEntry(out_row, textvariable=self.output_var, height=32)
-        self.output_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.output_entry = ctk.CTkEntry(
+            out_row,
+            textvariable=self.output_var,
+            height=36,
+            font=ctk.CTkFont(size=12, family="Segoe UI"),
+            corner_radius=8,
+            border_width=2,
+            border_color=(self.colors['border'], self.colors['border'])
+        )
+        self.output_entry.pack(side="left", fill="x", expand=True, padx=(0, 12))
 
-        browse_btn = ctk.CTkButton(out_row, text="Browse", width=80, height=32, command=self._browse_output)
+        browse_btn = ctk.CTkButton(
+            out_row,
+            text="Browse",
+            width=85,
+            height=36,
+            command=self._browse_output,
+            font=ctk.CTkFont(size=12, family="Segoe UI"),
+            fg_color=(self.colors['primary'], self.colors['primary_hover']),
+            hover_color=(self.colors['primary_hover'], self.colors['primary']),
+            corner_radius=8
+        )
         browse_btn.pack(side="left")
 
-        # Progress
-        prog_row = ctk.CTkFrame(self.frame, fg_color="transparent")
-        prog_row.pack(fill="x", padx=10, pady=(5, 5))
+        # Modern progress section
+        progress_section = ctk.CTkFrame(self.frame, fg_color="transparent")
+        progress_section.pack(fill="x", padx=20, pady=(0, 15))
 
-        self.progress_bar = ctk.CTkProgressBar(prog_row)
-        self.progress_bar.pack(fill="x")
+        # Progress bar with modern styling
+        self.progress_bar = ctk.CTkProgressBar(
+            progress_section,
+            height=8,
+            corner_radius=4,
+            border_width=1,
+            border_color=(self.colors['border'], self.colors['border'])
+        )
+        self.progress_bar.pack(fill="x", pady=(0, 8))
         self.progress_bar.set(0)
 
-        self.progress_text = ctk.CTkLabel(self.frame, text="Waiting", font=ctk.CTkFont(size=12))
-        self.progress_text.pack(anchor="w", padx=10)
+        # Progress text with modern styling
+        self.progress_text = ctk.CTkLabel(
+            progress_section,
+            text="⏳ Ready to download",
+            font=ctk.CTkFont(size=13, family="Segoe UI"),
+            text_color=(self.colors['text_secondary'], self.colors['text_secondary'])
+        )
+        self.progress_text.pack(anchor="w")
 
-        # Terminal / Status
-        self.status_text = ctk.CTkTextbox(self.frame, height=130, font=ctk.CTkFont(size=11, family="Consolas"))
-        self.status_text.pack(fill="x", padx=10, pady=(5, 6))
+        # Modern terminal / status section
+        terminal_section = ctk.CTkFrame(self.frame, fg_color="transparent")
+        terminal_section.pack(fill="x", padx=20, pady=(0, 15))
 
-        clear_btn = ctk.CTkButton(self.frame, text="Clear Log", width=100, height=28, command=self._clear_status)
-        clear_btn.pack(anchor="w", padx=10, pady=(0, 10))
+        # Terminal header
+        terminal_header = ctk.CTkFrame(terminal_section, fg_color="transparent")
+        terminal_header.pack(fill="x")
+
+        terminal_title = ctk.CTkLabel(
+            terminal_header,
+            text="📋 Activity Log",
+            font=ctk.CTkFont(size=14, weight="bold", family="Segoe UI"),
+            text_color=(self.colors['text_primary'], self.colors['text_primary'])
+        )
+        terminal_title.pack(side="left")
+
+        # Clear button in header
+        clear_btn = ctk.CTkButton(
+            terminal_header,
+            text="🗑 Clear",
+            width=80,
+            height=28,
+            command=self._clear_status,
+            font=ctk.CTkFont(size=11, family="Segoe UI"),
+            fg_color=(self.colors['surface_light'], self.colors['surface']),
+            hover_color=(self.colors['danger'], self.colors['danger']),
+            corner_radius=6
+        )
+        clear_btn.pack(side="right")
+
+        # Status text with modern styling
+        self.status_text = ctk.CTkTextbox(
+            terminal_section,
+            height=140,
+            font=ctk.CTkFont(size=11, family="Consolas"),
+            corner_radius=8,
+            border_width=2,
+            border_color=(self.colors['border'], self.colors['border']),
+            fg_color=(self.colors['surface_light'], self.colors['surface'])
+        )
+        self.status_text.pack(fill="x", pady=(8, 0))
+
+        # Control buttons section (moved below activity log)
+        controls_section = ctk.CTkFrame(self.frame, fg_color="transparent")
+        controls_section.pack(fill="x", padx=20, pady=(10, 15))
+
+        # Start and Stop buttons
+        buttons_frame = ctk.CTkFrame(controls_section, fg_color="transparent")
+        buttons_frame.pack()
+
+        # Modern start button
+        self.start_btn = ctk.CTkButton(
+            buttons_frame,
+            text="▶ Start",
+            width=100,
+            height=36,
+            command=self.start,
+            font=ctk.CTkFont(size=13, family="Segoe UI"),
+            fg_color=(self.colors['secondary'], self.colors['secondary']),
+            hover_color=(self.colors['secondary'], self.colors['secondary']),
+            corner_radius=8
+        )
+        self.start_btn.pack(side="left", padx=(0, 10))
+
+        # Modern abort button
+        self.abort_btn = ctk.CTkButton(
+            buttons_frame,
+            text="⏹ Stop",
+            width=100,
+            height=36,
+            command=self.abort,
+            font=ctk.CTkFont(size=13, family="Segoe UI"),
+            fg_color=(self.colors['danger'], self.colors['danger']),
+            hover_color=(self.colors['danger'], self.colors['danger']),
+            corner_radius=8
+        )
+        self.abort_btn.pack(side="left")
+        self.abort_btn.configure(state="disabled")
+
+        # Video/Playlist name (will be populated when URL is processed)
+        self.video_name = ""
+        self.playlist_name = ""
+        self.is_playlist = False
+        self._last_analyzed_url = ""
 
         # Internal tracking for throttled logging
         self._last_logged_progress = 0
         self._last_logged_filename = ""
         self._logged_item_filenames = set()
+
+    def update_video_info(self, url: str = None, force: bool = False):
+        """Update video/playlist information when URL changes"""
+        if url is None:
+            url = self.get_url()
+
+        if not url or (url == self._last_analyzed_url and not force):
+            return
+
+        self._last_analyzed_url = url
+
+        # Allow analysis during restoration for initial setup, but not for user changes
+        if getattr(self.ui, '_restoring_tasks', False) and not force:
+            return
+
+        try:
+            # Analyze URL to get video/playlist info
+            is_playlist, video_name, playlist_name = self.analyze_url_and_extract_info(url)
+
+            # Update task info
+            self.is_playlist = is_playlist
+            self.video_name = video_name if not is_playlist else ""
+            self.playlist_name = playlist_name if is_playlist else ""
+
+            # Update subtitle display
+            display_name = playlist_name if is_playlist else video_name
+            self.update_subtitle(display_name)
+
+        except Exception as e:
+            # More specific error handling
+            error_msg = f"Error updating video info for {url}: {e}"
+            print(error_msg)
+            # Update subtitle with error indicator but don't crash
+            try:
+                self.update_subtitle("⚠️ Error analyzing URL")
+            except Exception:
+                pass
+            # Log the error for debugging but don't re-raise
 
     def _run_on_ui(self, fn):
         """Schedule a callable to run on the Tk main thread safely."""
@@ -131,6 +351,55 @@ class TaskItem:
 
     def update_title(self, text: str):
         self.title_label.configure(text=text)
+
+    def update_subtitle(self, text: str = ""):
+        """Update the subtitle with video/playlist name"""
+        if text:
+            self.subtitle_label.configure(text=text)
+            self.subtitle_label.pack(side="left", padx=(10, 0), pady=(2, 0))
+        else:
+            self.subtitle_label.pack_forget()
+
+    def update_colors(self):
+        """Update colors when theme changes"""
+        self.colors = self.ui.get_current_colors()
+        # Update frame colors
+        self.frame.configure(
+            fg_color=(self.colors['card'], self.colors['card']),
+            border_color=(self.colors['border'], self.colors['border'])
+        )
+        # Update button colors
+        self.start_btn.configure(
+            fg_color=(self.colors['secondary'], self.colors['secondary']),
+            hover_color=(self.colors['secondary'], self.colors['secondary'])
+        )
+        self.abort_btn.configure(
+            fg_color=(self.colors['danger'], self.colors['danger']),
+            hover_color=(self.colors['danger'], self.colors['danger'])
+        )
+        # Update remove button colors
+        self.remove_btn.configure(
+            fg_color=(self.colors['surface_light'], self.colors['surface']),
+            hover_color=(self.colors['danger'], self.colors['danger']),
+            text_color=(self.colors['text_primary'], self.colors['text_primary'])
+        )
+        # Update text colors
+        self.title_label.configure(text_color=(self.colors['text_primary'], self.colors['text_primary']))
+        self.subtitle_label.configure(text_color=(self.colors['text_secondary'], self.colors['text_secondary']))
+        self.progress_text.configure(text_color=(self.colors['text_secondary'], self.colors['text_secondary']))
+
+    def update_status_indicator(self, status: str):
+        """Update the status indicator color based on task state"""
+        color_map = {
+            'idle': (self.colors['text_secondary'], self.colors['text_secondary']),
+            'running': (self.colors['secondary'], self.colors['secondary']),
+            'completed': (self.colors['success'], self.colors['success']),
+            'error': (self.colors['danger'], self.colors['danger']),
+            'aborted': (self.colors['warning'], self.colors['warning'])
+        }
+
+        color = color_map.get(status, color_map['idle'])
+        self.status_indicator.configure(text_color=color)
 
     def get_url(self) -> str:
         return self.url_var.get().strip()
@@ -200,9 +469,11 @@ class TaskItem:
         self._is_playlist_task = bool(is_playlist)
         if is_playlist:
             self.progress_text.configure(text="📑 Detected playlist - preparing...")
+            self.update_status_indicator('running')
             self.log("📑 Detected playlist URL - will download all videos")
         else:
             self.progress_text.configure(text="🎬 Detected single video - preparing...")
+            self.update_status_indicator('running')
             self.log("🎬 Detected single video URL")
 
         # Build metadata options from global UI
@@ -350,6 +621,53 @@ class TaskItem:
             return True
         return False
 
+    def analyze_url_and_extract_info(self, url: str) -> tuple[bool, str, str]:
+        """Analyze URL and extract video/playlist information"""
+        try:
+            import yt_dlp
+
+            # Check if it's a playlist
+            is_playlist = self._is_playlist_url(url)
+
+            # Use yt-dlp to extract basic info without downloading
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': True,  # Don't extract full metadata for playlists
+                'socket_timeout': 10,  # Add timeout to avoid hanging
+                'retries': 1,  # Reduce retries for faster failure
+            }
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                try:
+                    info = ydl.extract_info(url, download=False)
+
+                    if is_playlist and 'title' in info:
+                        # It's a playlist
+                        playlist_name = info.get('title', 'Unknown Playlist')
+                        return True, "", playlist_name
+                    elif 'title' in info:
+                        # It's a single video
+                        video_name = info.get('title', 'Unknown Video')
+                        return False, video_name, ""
+                    else:
+                        return False, "Unknown Video", ""
+
+                except Exception as e:
+                    error_msg = f"Error extracting info from {url}: {e}"
+                    print(error_msg)
+                    # Return safe defaults instead of crashing
+                    return is_playlist, "Unknown Video", "Unknown Playlist"
+
+        except ImportError:
+            # yt-dlp not available, try basic URL parsing
+            return self._is_playlist_url(url), "Unknown Video", "Unknown Playlist"
+        except Exception as e:
+            error_msg = f"Error in URL analysis for {url}: {e}"
+            print(error_msg)
+            # Return safe defaults instead of crashing
+            return False, "Unknown Video", "Unknown Playlist"
+
     def _update_progress(self, d):
         if not self._is_alive():
             return
@@ -480,20 +798,25 @@ class TaskItem:
             if success:
                 if error_summary:
                     self._set_progress_text_safe("⚠️ Completed with issues")
+                    self.update_status_indicator('completed')
                     self.log(f"⚠️ Completed with issues: {error_summary}")
                 else:
                     self._set_progress_text_safe("✅ Completed")
+                    self.update_status_indicator('completed')
                     self.log(f"✅ {message}")
             else:
                 if "aborted" in message.lower():
                     self._set_progress_text_safe("⏹️ Aborted")
+                    self.update_status_indicator('aborted')
                     self.log(f"⏹️ {message}")
                 else:
                     if error_summary:
                         self._set_progress_text_safe("⚠️ Completed with errors")
+                        self.update_status_indicator('error')
                         self.log(f"⚠️ Completed with errors: {error_summary}")
                     else:
                         self._set_progress_text_safe("❌ Failed")
+                        self.update_status_indicator('error')
                         self.log(f"❌ {message}")
                 # Do not show modal error popups; errors are logged in the task terminal only
 

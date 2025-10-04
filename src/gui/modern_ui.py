@@ -6,6 +6,7 @@ import sys
 import json
 import re
 import difflib
+import math
 from pathlib import Path
 from tkinter import filedialog, messagebox
 from ..core.downloader import Downloader
@@ -21,10 +22,53 @@ except ImportError:
 
 
 class ModernUI:
+    # Modern color palette for both light and dark themes
+    COLORS = {
+        'dark': {
+            'primary': '#6366f1',      # Indigo
+            'primary_hover': '#5856d6', # Darker indigo
+            'secondary': '#10b981',    # Emerald
+            'accent': '#f59e0b',       # Amber
+            'danger': '#ef4444',       # Red
+            'warning': '#f97316',      # Orange
+            'success': '#22c55e',      # Green
+            'surface': '#1f2937',      # Dark surface
+            'surface_light': '#374151', # Light surface
+            'background': '#111827',    # Dark background
+            'card': '#1f2937',         # Card background
+            'text_primary': '#f9fafb',  # Light text
+            'text_secondary': '#d1d5db', # Muted text
+            'border': '#374151',       # Border color
+        },
+        'light': {
+            'primary': '#6366f1',      # Indigo (same for consistency)
+            'primary_hover': '#5856d6', # Darker indigo
+            'secondary': '#10b981',    # Emerald
+            'accent': '#f59e0b',       # Amber
+            'danger': '#dc2626',       # Red
+            'warning': '#ea580c',      # Orange
+            'success': '#16a34a',      # Green
+            'surface': '#f8fafc',      # Light surface
+            'surface_light': '#f1f5f9', # Lighter surface
+            'background': '#ffffff',    # White background
+            'card': '#ffffff',         # White card background
+            'text_primary': '#0f172a',  # Dark text
+            'text_secondary': '#64748b', # Muted text
+            'border': '#e2e8f0',       # Light border color
+        }
+    }
+
+    # Animation constants
+    ANIMATION_DURATION = 300
+    EASING_FUNCTIONS = {
+        'ease_out': lambda t: 1 - math.pow(1 - t, 3),
+        'ease_in_out': lambda t: 3 * t * t - 2 * t * t * t if t < 0.5 else 1 - math.pow(-2 * t + 2, 3) / 2
+    }
+
     def __init__(self):
         # Initialize config first
         self.config = Config()
-        
+
         # Configure CustomTkinter appearance
         self.setup_appearance()
         
@@ -37,11 +81,39 @@ class ModernUI:
         if not self.downloader.ffmpeg_available:
             self.show_ffmpeg_warning()
         
-        # Create the main window
+        # Create the main window with modern styling
         self.root = ctk.CTk()
-        self.root.title("YouTube Downloader")
-        self.root.geometry("800x750")
-        self.root.minsize(400, 450)
+        self.root.title("🎬 YouTube Media Downloader")
+
+        # Set minimum size
+        self.root.minsize(800, 600)
+
+        # Maximize window to fill entire screen (but keep it windowed)
+        try:
+            # Try modern maximized state first
+            self.root.state('zoomed')
+            # Ensure window is not minimized and is visible
+            self.root.update()
+            self.root.deiconify()
+            self.root.focus_force()
+        except:
+            try:
+                # Fallback for older Tkinter versions
+                self.root.attributes('-zoomed', True)
+                self.root.update()
+                self.root.deiconify()
+                self.root.focus_force()
+            except:
+                # Final fallback - set large geometry
+                screen_width = self.root.winfo_screenwidth()
+                screen_height = self.root.winfo_screenheight()
+                self.root.geometry(f"{screen_width}x{screen_height}+0+0")
+                self.root.update()
+                self.root.deiconify()
+                self.root.focus_force()
+
+        # Modern window appearance (no transparency for better visibility)
+        pass
         
         # Set window icon (resolve relative to project root with fallback)
         try:
@@ -58,21 +130,22 @@ class ModernUI:
         except Exception:
             pass
         
-        # Create and pack the GUI elements
-        self.create_widgets()
-        
         # Track debounced persistence and restoration state
         self._persist_after_id = None
         self._restoring_tasks = False
-        
-        # Restore tasks state (count and URLs) from config
+
+        # Create and pack the GUI elements
+        self.create_widgets()
+
+        # Restore tasks state (count and URLs) from config after UI is created
         self.restore_tasks_from_config()
+
+        # Note: Window is launched maximized to fill screen
         
-        # Center the window
-        self.center_window()
-        
-        # Bind window close event
+        # Bind window close event and maximize toggle
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.root.bind("<Escape>", self.toggle_maximize)
+        self.root.bind("<F11>", self.toggle_maximize)
         
         # Set up signal handlers for graceful exit
         self.setup_signal_handlers()
@@ -81,23 +154,109 @@ class ModernUI:
         self._output_dir_save_after_id = None
 
     def setup_appearance(self):
-        """Configure CustomTkinter appearance"""
+        """Configure CustomTkinter appearance with modern styling"""
         # Set appearance mode based on system or config
         if DARKDETECT_AVAILABLE:
             system_mode = darkdetect.theme()
         else:
-            # Fallback: assume light mode if darkdetect not available
-            system_mode = "light"
-        
+            # Fallback: assume dark mode for modern look
+            system_mode = "dark"
+
         config_mode = self.config.get("theme", system_mode)
-        
+
         if config_mode == "auto":
             ctk.set_appearance_mode("system")
         else:
             ctk.set_appearance_mode(config_mode)
-        
-        # Set color theme
-        ctk.set_default_color_theme("blue")
+
+        # Configure modern styling
+        self._apply_modern_styling()
+
+    def get_current_colors(self):
+        """Get the current color palette based on the theme mode"""
+        current_mode = ctk.get_appearance_mode().lower()
+        return self.COLORS.get(current_mode, self.COLORS['dark'])
+
+    def _apply_modern_styling(self):
+        """Apply modern styling and custom colors to the app"""
+        try:
+            # Get current colors based on theme mode
+            current_colors = self.get_current_colors()
+
+            # Create custom color theme for current mode
+            colors = [
+                ("CTk", {"fg_color": [current_colors['background'], current_colors['surface']]}),
+                ("CTkToplevel", {"fg_color": [current_colors['background'], current_colors['surface']]}),
+                ("CTkFrame", {"fg_color": [current_colors['surface'], current_colors['surface_light']]}),
+                ("CTkButton", {
+                    "fg_color": [current_colors['primary'], current_colors['primary_hover']],
+                    "hover_color": [current_colors['primary_hover'], current_colors['primary']],
+                    "border_color": [current_colors['primary'], current_colors['primary_hover']],
+                    "text_color": [current_colors['text_primary'], current_colors['text_primary']],
+                    "border_width": [1, 1]
+                }),
+                ("CTkLabel", {
+                    "fg_color": "transparent",
+                    "text_color": [current_colors['text_primary'], current_colors['text_secondary']]
+                }),
+                ("CTkEntry", {
+                    "fg_color": [current_colors['surface_light'], current_colors['surface']],
+                    "border_color": [current_colors['border'], current_colors['border']],
+                    "text_color": [current_colors['text_primary'], current_colors['text_primary']],
+                    "placeholder_text_color": [current_colors['text_secondary'], current_colors['text_secondary']]
+                }),
+                ("CTkTextbox", {
+                    "fg_color": [current_colors['surface_light'], current_colors['surface']],
+                    "border_color": [current_colors['border'], current_colors['border']],
+                    "text_color": [current_colors['text_primary'], current_colors['text_primary']]
+                }),
+                ("CTkScrollableFrame", {
+                    "fg_color": [current_colors['surface'], current_colors['surface_light']],
+                    "scrollbar_fg_color": [current_colors['surface_light'], current_colors['surface']],
+                    "scrollbar_button_color": [current_colors['primary'], current_colors['primary_hover']],
+                    "scrollbar_button_hover_color": [current_colors['primary_hover'], current_colors['primary']]
+                }),
+                ("CTkProgressBar", {
+                    "fg_color": [current_colors['surface_light'], current_colors['surface']],
+                    "progress_color": [current_colors['secondary'], current_colors['secondary']],
+                    "border_color": [current_colors['border'], current_colors['border']]
+                }),
+                ("CTkCheckBox", {
+                    "fg_color": [current_colors['surface_light'], current_colors['surface']],
+                    "border_color": [current_colors['border'], current_colors['border']],
+                    "hover_color": [current_colors['primary'], current_colors['primary_hover']],
+                    "checkmark_color": [current_colors['text_primary'], current_colors['text_primary']],
+                    "text_color": [current_colors['text_primary'], current_colors['text_primary']]
+                }),
+                ("CTkRadioButton", {
+                    "fg_color": [current_colors['surface_light'], current_colors['surface']],
+                    "border_color": [current_colors['border'], current_colors['border']],
+                    "hover_color": [current_colors['primary'], current_colors['primary_hover']],
+                    "checkmark_color": [current_colors['text_primary'], current_colors['text_primary']],
+                    "text_color": [current_colors['text_primary'], current_colors['text_primary']]
+                }),
+                ("CTkOptionMenu", {
+                    "fg_color": [current_colors['surface_light'], current_colors['surface']],
+                    "button_color": [current_colors['primary'], current_colors['primary_hover']],
+                    "button_hover_color": [current_colors['primary_hover'], current_colors['primary']],
+                    "text_color": [current_colors['text_primary'], current_colors['text_primary']],
+                    "dropdown_fg_color": [current_colors['surface'], current_colors['surface_light']],
+                    "dropdown_text_color": [current_colors['text_primary'], current_colors['text_primary']],
+                    "dropdown_hover_color": [current_colors['primary'], current_colors['primary_hover']]
+                })
+            ]
+
+            # Apply custom theme
+            for widget, color_dict in colors:
+                try:
+                    ctk.CTkAppearanceModeTracker(widget, color_dict)
+                except:
+                    pass
+
+        except Exception as e:
+            print(f"Warning: Could not apply custom styling: {e}")
+            # Fallback to default theme
+            pass
 
     def create_widgets(self):
         """Create all GUI widgets"""
@@ -110,32 +269,141 @@ class ModernUI:
         # Create scrollable content
         self.create_scrollable_content()
 
+        # Restore settings from config into UI
+        self.restore_settings_to_ui()
+
+    def _create_settings_category(self, parent, title, options, ffmpeg_disabled=False, disabled_keys=None):
+        """Create a settings category with title and checkboxes"""
+        if disabled_keys is None:
+            disabled_keys = []
+
+        # Category frame
+        category_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        category_frame.pack(fill="x", pady=(0, 15))
+
+        # Category title
+        title_label = ctk.CTkLabel(
+            category_frame,
+            text=title,
+            font=ctk.CTkFont(size=14, weight="bold", family="Segoe UI"),
+            text_color=(self.get_current_colors()['text_primary'], self.get_current_colors()['text_primary'])
+        )
+        title_label.pack(anchor="w", pady=(0, 10))
+
+        # Checkboxes container
+        checkboxes_frame = ctk.CTkFrame(category_frame, fg_color="transparent")
+        checkboxes_frame.pack(fill="x", pady=(0, 10))
+
+        # Create checkboxes for this category
+        for key, text, default in options:
+            var = ctk.BooleanVar(value=default)
+            self.metadata_vars[key] = var
+
+            checkbox = ctk.CTkCheckBox(
+                checkboxes_frame,
+                text=text,
+                variable=var,
+                font=ctk.CTkFont(size=12, family="Segoe UI"),
+                state="disabled" if ffmpeg_disabled and key in disabled_keys else "normal",
+                command=lambda k=key, v=var: self._save_metadata_setting(k, v.get()),
+                text_color=(self.get_current_colors()['text_primary'], self.get_current_colors()['text_primary']),
+                hover_color=(self.get_current_colors()['primary'], self.get_current_colors()['primary_hover'])
+            )
+            checkbox.pack(anchor="w", pady=2)
+
+        return category_frame
+
+    def restore_settings_to_ui(self):
+        """Restore all settings from config into UI elements"""
+        try:
+            # Restore metadata settings
+            for key, var in self.metadata_vars.items():
+                saved_value = self.config.get(key, False)
+                var.set(saved_value)
+
+            # Restore cookie file setting
+            cookie_file = self.config.get("cookie_file", "")
+            self.cookie_var.set(cookie_file)
+
+            # Restore theme (already handled in setup_appearance)
+            # Restore output directory (handled per-task)
+
+        except Exception as e:
+            print(f"Error restoring settings to UI: {e}")
+
     def create_scrollable_container(self):
-        """Create scrollable container for the main content"""
-        # Main container with scrollbar
-        self.main_container = ctk.CTkFrame(self.root)
-        self.main_container.pack(fill="both", expand=True, padx=20, pady=(0, 20))
-        
-        # Create scrollable frame
-        self.scrollable_frame = ctk.CTkScrollableFrame(
-            self.main_container,
-            width=450,  # Responsive width for small screens
+        """Create modern scrollable container for the main content"""
+        # Main container with modern styling
+        self.main_container = ctk.CTkFrame(
+            self.root,
             fg_color="transparent"
         )
-        self.scrollable_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        self.main_container.pack(fill="both", expand=True, padx=0, pady=(0, 30))
+
+        # Create modern scrollable frame with card-like appearance
+        current_colors = self.get_current_colors()
+        self.scrollable_frame = ctk.CTkScrollableFrame(
+            self.main_container,
+            fg_color=(current_colors['surface'], current_colors['surface_light']),
+            corner_radius=16,
+            border_width=2,
+            border_color=(current_colors['border'], current_colors['border'])
+        )
+        self.scrollable_frame.pack(fill="both", expand=True, padx=30, pady=0)
 
     def create_scrollable_content(self):
-        """Create all content within the scrollable frame"""
-        # Removed global Download Options section (per-task controls remain)
-        
-        # Metadata section
-        self.create_metadata_section()
+        """Create all content within the scrollable frame with modern card layouts"""
+        # Content container with padding
+        content_frame = ctk.CTkFrame(self.scrollable_frame, fg_color="transparent")
+        content_frame.pack(fill="both", expand=True, padx=25, pady=25)
 
-        # Cookie file section
-        self.create_cookie_section()
+        # Welcome card at the top
+        self.create_welcome_card(content_frame)
 
-        # Tasks section (multi-task support)
-        self.create_tasks_section()
+        # Metadata section with modern card design
+        self.create_metadata_section(content_frame)
+
+        # Cookie file section with modern card design
+        self.create_cookie_section(content_frame)
+
+        # Tasks section (multi-task support) with modern card design
+        self.create_tasks_section(content_frame)
+
+    def create_welcome_card(self, parent):
+        """Create a modern welcome card at the top"""
+        current_colors = self.get_current_colors()
+        welcome_card = ctk.CTkFrame(
+            parent,
+            fg_color=(current_colors['card'], current_colors['card']),
+            corner_radius=12,
+            border_width=1,
+            border_color=(current_colors['border'], current_colors['border'])
+        )
+        welcome_card.pack(fill="x", pady=(0, 25))
+
+        # Welcome content
+        welcome_content = ctk.CTkFrame(welcome_card, fg_color="transparent")
+        welcome_content.pack(fill="x", padx=25, pady=20)
+
+        # Welcome title
+        welcome_title = ctk.CTkLabel(
+            welcome_content,
+            text="🚀 Ready to Download",
+            font=ctk.CTkFont(size=20, weight="bold", family="Segoe UI"),
+            text_color=(current_colors['text_primary'], current_colors['text_primary'])
+        )
+        welcome_title.pack(anchor="w", pady=(0, 8))
+
+        # Welcome description
+        welcome_desc = ctk.CTkLabel(
+            welcome_content,
+            text="Configure your download settings below, then add tasks to start downloading YouTube content.\n"
+                 "Supports playlists, individual videos, and various quality options.",
+            font=ctk.CTkFont(size=13, family="Segoe UI"),
+            text_color=(current_colors['text_secondary'], current_colors['text_secondary']),
+            justify="left"
+        )
+        welcome_desc.pack(anchor="w")
 
     def restore_tasks_from_config(self):
         """Restore number of tasks and their URLs from config"""
@@ -150,7 +418,31 @@ class ModernUI:
                         url_value = (item.get("url") or "").strip()
                         fmt_value = (item.get("format") or self.config.get("default_format", "audio")).strip()
                         output_value = item.get("output") or self.config.get("output_directory", self.config.get_default_output_directory())
+
+                        # Extract video/playlist info
+                        video_name = item.get("video_name", "")
+                        playlist_name = item.get("playlist_name", "")
+                        is_playlist = item.get("is_playlist", False)
+
                         task = self.add_task(url=url_value)
+
+                        # Set video/playlist info
+                        if hasattr(task, 'video_name'):
+                            task.video_name = video_name
+                        if hasattr(task, 'playlist_name'):
+                            task.playlist_name = playlist_name
+                        if hasattr(task, 'is_playlist'):
+                            task.is_playlist = is_playlist
+
+                        # Update subtitle with video/playlist name (skip URL analysis during restoration)
+                        display_name = playlist_name if is_playlist and playlist_name else video_name
+                        if display_name:
+                            task.update_subtitle(display_name)
+                        # Skip URL analysis during restoration to avoid crashes
+                        # elif url_value:
+                        #     if hasattr(task, 'update_video_info'):
+                        #         task.update_video_info(url_value, force=True)
+
                         try:
                             task.format_var.set(fmt_value if fmt_value in ("audio", "video") else self.config.get("default_format", "audio"))
                         except Exception:
@@ -160,9 +452,14 @@ class ModernUI:
                                 task.output_var.set(output_value)
                         except Exception:
                             pass
-                    except Exception:
+                    except Exception as e:
+                        # Log error but continue with other tasks
+                        print(f"Error restoring task: {e}")
                         # Fallback: add an empty task if malformed
-                        self.add_task(url="")
+                        try:
+                            self.add_task(url="")
+                        except Exception:
+                            pass
             else:
                 # Backwards compatibility with older settings
                 urls = self.config.get("task_urls", []) or []
@@ -176,24 +473,56 @@ class ModernUI:
 
                 for i in range(count):
                     url_value = urls[i] if i < len(urls) else ""
-                    self.add_task(url=url_value)
+                    try:
+                        self.add_task(url=url_value)
+                    except Exception as e:
+                        print(f"Error adding task {i}: {e}")
+                        try:
+                            self.add_task(url="")
+                        except Exception:
+                            pass
+        except Exception as e:
+            # Critical error in restoration - log and continue with empty task
+            print(f"Critical error during task restoration: {e}")
+            try:
+                self.add_task(url="")
+            except Exception:
+                pass
         finally:
             self._restoring_tasks = False
-            # Persist once after restore to normalize values
-            self._persist_tasks_to_config()
+            # Don't persist immediately after restore to avoid overwriting restored data
 
     def _attach_task_bindings(self, task):
         """Attach listeners to task inputs for persistence"""
         try:
-            task.url_var.trace_add("write", lambda *args: self._on_task_url_changed())
-            task.output_var.trace_add("write", lambda *args: self._on_task_url_changed())
-            task.format_var.trace_add("write", lambda *args: self._on_task_url_changed())
+            # Create a closure that captures the task reference
+            def make_url_callback(t):
+                return lambda *args: self._on_task_changed(t, "url")
+
+            def make_output_callback(t):
+                return lambda *args: self._on_task_changed(t, "output")
+
+            def make_format_callback(t):
+                return lambda *args: self._on_task_changed(t, "format")
+
+            task.url_var.trace_add("write", make_url_callback(task))
+            task.output_var.trace_add("write", make_output_callback(task))
+            task.format_var.trace_add("write", make_format_callback(task))
         except Exception:
             pass
 
-    def _on_task_url_changed(self):
+    def _on_task_changed(self, task, change_type):
+        """Handle changes to task variables"""
         if getattr(self, '_restoring_tasks', False):
             return
+
+        # Update video info if URL changed
+        if change_type == "url":
+            url = task.get_url()
+            if url and hasattr(task, 'update_video_info'):
+                task.update_video_info(url, force=True)
+
+        # Schedule persistence for all changes
         self._schedule_persist_tasks()
 
     def _schedule_persist_tasks(self):
@@ -219,13 +548,19 @@ class ModernUI:
                     tasks_array.append({
                         "url": t.get_url(),
                         "format": t.format_var.get() if hasattr(t, 'format_var') else self.config.get("default_format", "audio"),
-                        "output": t.output_var.get() if hasattr(t, 'output_var') else self.config.get("output_directory", self.config.get_default_output_directory())
+                        "output": t.output_var.get() if hasattr(t, 'output_var') else self.config.get("output_directory", self.config.get_default_output_directory()),
+                        "video_name": getattr(t, 'video_name', ""),
+                        "playlist_name": getattr(t, 'playlist_name', ""),
+                        "is_playlist": getattr(t, 'is_playlist', False)
                     })
                 except Exception:
                     tasks_array.append({
                         "url": "",
                         "format": self.config.get("default_format", "audio"),
-                        "output": self.config.get("output_directory", self.config.get_default_output_directory())
+                        "output": self.config.get("output_directory", self.config.get_default_output_directory()),
+                        "video_name": "",
+                        "playlist_name": "",
+                        "is_playlist": False
                     })
 
             # Store new structure
@@ -238,44 +573,143 @@ class ModernUI:
             pass
 
     def create_header(self):
-        """Create header with title and theme toggle"""
-        header_frame = ctk.CTkFrame(self.root, fg_color="transparent")
-        header_frame.pack(fill="x", padx=20, pady=(20, 0))
-        
-        # Title with icon
-        title_label = ctk.CTkLabel(
-            header_frame, 
-            text="🎬 YouTube Downloader", 
-            font=ctk.CTkFont(size=24, weight="bold")
+        """Create modern header with animated title and controls"""
+        # Main header frame with gradient-like background effect
+        current_colors = self.get_current_colors()
+        header_frame = ctk.CTkFrame(
+            self.root,
+            fg_color=(current_colors['surface'], current_colors['surface_light']),
+            corner_radius=0
         )
-        title_label.pack(side="left", anchor="w")
-        
-        # Theme toggle button
-        self.theme_button = ctk.CTkButton(
-            header_frame,
-            text="🌙",
-            width=60,
-            height=40,
-            command=self.toggle_theme,
-            fg_color=("gray80", "gray30"),
-            hover_color=("gray70", "gray40"),
-            text_color=("gray10", "gray90"),
-            font=ctk.CTkFont(size=18),
-            anchor="center",
-            border_width=1,
-            border_color=("gray60", "gray40")
-        )
-        self.theme_button.pack(side="right", pady=(0, 10))
+        header_frame.pack(fill="x", padx=0, pady=(0, 20))
 
-        # Import button
-        import_button = ctk.CTkButton(
+        # Create inner header with padding
+        inner_header = ctk.CTkFrame(
             header_frame,
-            text="📥 Import",
-            width=110,
-            height=40,
-            command=self.show_import_dialog
+            fg_color="transparent"
         )
-        import_button.pack(side="right", padx=(0, 10), pady=(0, 10))
+        inner_header.pack(fill="x", padx=30, pady=25)
+
+        # Left section: Logo and title with animations
+        left_section = ctk.CTkFrame(inner_header, fg_color="transparent")
+        left_section.pack(side="left", fill="y")
+
+        # Animated logo/title area
+        self.title_frame = ctk.CTkFrame(
+            left_section,
+            fg_color="transparent"
+        )
+        self.title_frame.pack(side="left")
+
+        # Logo icon (animated)
+        self.logo_label = ctk.CTkLabel(
+            self.title_frame,
+            text="🎬",
+            font=ctk.CTkFont(size=32, weight="bold")
+        )
+        self.logo_label.pack(side="left", padx=(0, 10))
+
+        # Main title with modern typography
+        self.title_label = ctk.CTkLabel(
+            self.title_frame,
+            text="YouTube Media Downloader",
+            font=ctk.CTkFont(size=28, weight="bold", family="Segoe UI"),
+            text_color=(current_colors['text_primary'], current_colors['text_primary'])
+        )
+        self.title_label.pack(side="left")
+
+        # Subtitle
+        self.subtitle_label = ctk.CTkLabel(
+            self.title_frame,
+            text="Professional media extraction tool",
+            font=ctk.CTkFont(size=12, family="Segoe UI"),
+            text_color=(current_colors['text_secondary'], current_colors['text_secondary'])
+        )
+        self.subtitle_label.pack(side="left", padx=(15, 0))
+
+        # Right section: Action buttons
+        right_section = ctk.CTkFrame(inner_header, fg_color="transparent")
+        right_section.pack(side="right", fill="y")
+
+        # Button container with modern styling
+        button_container = ctk.CTkFrame(
+            right_section,
+            fg_color="transparent"
+        )
+        button_container.pack(side="right")
+
+        # Modern theme toggle with hover effects
+        self.theme_button = ctk.CTkButton(
+            button_container,
+            text="🌙",
+            width=50,
+            height=45,
+            command=self.toggle_theme,
+            fg_color=(current_colors['surface_light'], current_colors['surface']),
+            hover_color=(current_colors['primary'], current_colors['primary_hover']),
+            text_color=(current_colors['text_primary'], current_colors['text_primary']),
+            font=ctk.CTkFont(size=20),
+            corner_radius=12,
+            border_width=2,
+            border_color=(current_colors['border'], current_colors['border'])
+        )
+        self.theme_button.pack(side="left", padx=(0, 10))
+
+        # Import button with modern styling
+        self.import_button = ctk.CTkButton(
+            button_container,
+            text="📥 Import Files",
+            width=140,
+            height=45,
+            command=self.show_import_dialog,
+            fg_color=(current_colors['secondary'], current_colors['secondary']),
+            hover_color=(current_colors['secondary'], current_colors['secondary']),
+            text_color=(current_colors['text_primary'], current_colors['text_primary']),
+            font=ctk.CTkFont(size=14, weight="bold", family="Segoe UI"),
+            corner_radius=12
+        )
+        self.import_button.pack(side="left")
+
+        # Add hover animations
+        self._setup_hover_animations()
+
+    def _setup_hover_animations(self):
+        """Setup smooth hover animations for interactive elements"""
+        current_colors = self.get_current_colors()
+
+        # Theme button hover effect
+        def theme_hover_in(e):
+            current_colors = self.get_current_colors()
+            self.theme_button.configure(
+                fg_color=(current_colors['primary'], current_colors['primary_hover']),
+                border_color=(current_colors['primary'], current_colors['primary_hover'])
+            )
+
+        def theme_hover_out(e):
+            current_colors = self.get_current_colors()
+            self.theme_button.configure(
+                fg_color=(current_colors['surface_light'], current_colors['surface']),
+                border_color=(current_colors['border'], current_colors['border'])
+            )
+
+        self.theme_button.bind("<Enter>", theme_hover_in)
+        self.theme_button.bind("<Leave>", theme_hover_out)
+
+        # Import button hover effect (already styled)
+        def import_hover_in(e):
+            current_colors = self.get_current_colors()
+            self.import_button.configure(
+                fg_color=(current_colors['accent'], current_colors['accent'])
+            )
+
+        def import_hover_out(e):
+            current_colors = self.get_current_colors()
+            self.import_button.configure(
+                fg_color=(current_colors['secondary'], current_colors['secondary'])
+            )
+
+        self.import_button.bind("<Enter>", import_hover_in)
+        self.import_button.bind("<Leave>", import_hover_out)
 
     def show_import_dialog(self):
         """Show a modal dialog to import files from one directory to another."""
@@ -793,160 +1227,226 @@ class ModernUI:
             except Exception:
                 pass
 
-    def create_tasks_section(self):
-        """Create the tasks management section for multiple concurrent downloads"""
-        tasks_frame = ctk.CTkFrame(self.scrollable_frame)
-        tasks_frame.pack(fill="both", expand=True, pady=(0, 15))
-
-        # Header row with controls
-        header = ctk.CTkFrame(tasks_frame, fg_color="transparent")
-        header.pack(fill="x", padx=15, pady=(15, 10))
-
-        title_label = ctk.CTkLabel(
-            header,
-            text="Tasks",
-            font=ctk.CTkFont(size=14, weight="bold")
+    def create_tasks_section(self, parent):
+        """Create the tasks management section with modern card design"""
+        current_colors = self.get_current_colors()
+        # Tasks card container
+        tasks_card = ctk.CTkFrame(
+            parent,
+            fg_color=(current_colors['card'], current_colors['card']),
+            corner_radius=12,
+            border_width=1,
+            border_color=(current_colors['border'], current_colors['border'])
         )
-        title_label.pack(side="left")
+        tasks_card.pack(fill="both", expand=True, pady=(0, 0))
 
-        controls_frame = ctk.CTkFrame(header, fg_color="transparent")
-        controls_frame.pack(side="right")
+        # Tasks header
+        tasks_header = ctk.CTkFrame(tasks_card, fg_color="transparent")
+        tasks_header.pack(fill="x", padx=25, pady=(20, 15))
 
+        # Tasks title with icon
+        tasks_title = ctk.CTkLabel(
+            tasks_header,
+            text="📋 Download Tasks",
+            font=ctk.CTkFont(size=18, weight="bold", family="Segoe UI"),
+            text_color=(current_colors['text_primary'], current_colors['text_primary'])
+        )
+        tasks_title.pack(side="left")
+
+        # Tasks description
+        tasks_desc = ctk.CTkLabel(
+            tasks_header,
+            text="Add multiple download tasks and manage them independently",
+            font=ctk.CTkFont(size=12, family="Segoe UI"),
+            text_color=(current_colors['text_secondary'], current_colors['text_secondary'])
+        )
+        tasks_desc.pack(side="left", padx=(15, 0))
+
+        # Controls section
+        controls_section = ctk.CTkFrame(tasks_header, fg_color="transparent")
+        controls_section.pack(side="right")
+
+        # Modern control buttons
         add_btn = ctk.CTkButton(
-            controls_frame,
+            controls_section,
             text="➕ Add Task",
-            width=110,
-            height=32,
-            command=self.add_task
+            width=120,
+            height=38,
+            command=self.add_task,
+            font=ctk.CTkFont(size=12, family="Segoe UI"),
+            fg_color=(current_colors['primary'], current_colors['primary_hover']),
+            hover_color=(current_colors['primary_hover'], current_colors['primary']),
+            corner_radius=8
         )
         add_btn.pack(side="left", padx=(0, 8))
 
         run_all_btn = ctk.CTkButton(
-            controls_frame,
+            controls_section,
             text="▶ Run All",
-            width=100,
-            height=32,
-            command=self.run_all_tasks
+            width=110,
+            height=38,
+            command=self.run_all_tasks,
+            font=ctk.CTkFont(size=12, family="Segoe UI"),
+            fg_color=(current_colors['secondary'], current_colors['secondary']),
+            hover_color=(current_colors['secondary'], current_colors['secondary']),
+            corner_radius=8
         )
         run_all_btn.pack(side="left", padx=(0, 8))
 
         scram_btn = ctk.CTkButton(
-            controls_frame,
-            text="🛑 Scram",
-            width=100,
-            height=32,
-            fg_color=("red", "darkred"),
-            hover_color=("darkred", "red"),
-            command=self.scram_all_tasks
+            controls_section,
+            text="🛑 Stop All",
+            width=110,
+            height=38,
+            command=self.scram_all_tasks,
+            font=ctk.CTkFont(size=12, family="Segoe UI"),
+            fg_color=(current_colors['danger'], current_colors['danger']),
+            hover_color=(current_colors['danger'], current_colors['danger']),
+            corner_radius=8
         )
         scram_btn.pack(side="left")
 
-        # Container for task items (stacked vertically)
-        self.tasks_list_frame = ctk.CTkFrame(tasks_frame)
-        self.tasks_list_frame.pack(fill="both", expand=True, padx=15, pady=(0, 10))
+        # Container for task items (stacked vertically) with modern styling
+        self.tasks_list_frame = ctk.CTkFrame(
+            tasks_card,
+            fg_color="transparent"
+        )
+        self.tasks_list_frame.pack(fill="both", expand=True, padx=25, pady=(15, 25))
 
         # Initial tasks are restored from config in __init__
 
     # Global Download Options section removed; per-task format controls are used instead.
 
-    def create_metadata_section(self):
-        """Create metadata options section"""
-        metadata_frame = ctk.CTkFrame(self.scrollable_frame)
-        metadata_frame.pack(fill="x", pady=(0, 15))
-        
-        # Metadata label
-        metadata_label = ctk.CTkLabel(
-            metadata_frame, 
-            text="Metadata Options", 
-            font=ctk.CTkFont(size=14, weight="bold")
+    def create_metadata_section(self, parent):
+        """Create metadata options section with modern card design"""
+        current_colors = self.get_current_colors()
+        # Metadata card container
+        metadata_card = ctk.CTkFrame(
+            parent,
+            fg_color=(current_colors['card'], current_colors['card']),
+            corner_radius=12,
+            border_width=1,
+            border_color=(current_colors['border'], current_colors['border'])
         )
-        metadata_label.pack(anchor="w", padx=15, pady=(15, 10))
-        
-        # Create metadata checkboxes in a 3-column grid layout
-        metadata_grid = ctk.CTkFrame(metadata_frame, fg_color="transparent")
-        metadata_grid.pack(fill="x", padx=15, pady=(0, 15))
-        
-        # Create three columns
-        left_column = ctk.CTkFrame(metadata_grid, fg_color="transparent")
-        left_column.pack(side="left", fill="both", expand=True, padx=(0, 5))
-        
-        middle_column = ctk.CTkFrame(metadata_grid, fg_color="transparent")
-        middle_column.pack(side="left", fill="both", expand=True, padx=5)
-        
-        right_column = ctk.CTkFrame(metadata_grid, fg_color="transparent")
-        right_column.pack(side="left", fill="both", expand=True, padx=(5, 0))
+        metadata_card.pack(fill="x", pady=(0, 25))
+
+        # Metadata header
+        metadata_header = ctk.CTkFrame(metadata_card, fg_color="transparent")
+        metadata_header.pack(fill="x", padx=25, pady=(20, 15))
+
+        # Metadata title with icon
+        metadata_title = ctk.CTkLabel(
+            metadata_header,
+            text="⚙️ Download Settings",
+            font=ctk.CTkFont(size=18, weight="bold", family="Segoe UI"),
+            text_color=(current_colors['text_primary'], current_colors['text_primary'])
+        )
+        metadata_title.pack(anchor="w")
+
+        # Metadata description
+        metadata_desc = ctk.CTkLabel(
+            metadata_header,
+            text="Configure how your downloads are processed and saved",
+            font=ctk.CTkFont(size=12, family="Segoe UI"),
+            text_color=(current_colors['text_secondary'], current_colors['text_secondary'])
+        )
+        metadata_desc.pack(anchor="w", pady=(2, 0))
         
         # Initialize metadata variables
         self.metadata_vars = {}
-        
-        # Column 1 options
+
+        # Organize settings into logical categories using columns
         ffmpeg_disabled = not self.downloader.ffmpeg_available
-        col1_options = [
-            ("embed_metadata", "📝 Embed Metadata", self._load_metadata_setting("embed_metadata", True and not ffmpeg_disabled)),
-            ("embed_thumbnail", "🖼️ Embed Thumbnail", self._load_metadata_setting("embed_thumbnail", True and not ffmpeg_disabled)),
-            ("embed_chapters", "📚 Embed Chapters", self._load_metadata_setting("embed_chapters", True and not ffmpeg_disabled)),
-        ]
 
-        # Column 2 options
-        col2_options = [
-            ("write_thumbnail", "💾 Save Thumbnail", self._load_metadata_setting("write_thumbnail", True)),
-            ("include_author", "👤 Include Author", self._load_metadata_setting("include_author", False)),
-            ("write_description", "📄 Save Description", self._load_metadata_setting("write_description", False)),
-        ]
+        # Create main categories container with columns
+        categories_container = ctk.CTkFrame(metadata_card, fg_color="transparent")
+        categories_container.pack(fill="x", padx=25, pady=(0, 15))
 
-        # Column 3 options
-        col3_options = [
-            ("write_info_json", "📋 Save Info JSON", self._load_metadata_setting("write_info_json", False)),
-            ("embed_subs", "📝 Download Subtitles", self._load_metadata_setting("embed_subs", False)),
-            ("playlist_album_override", "📀 Use Playlist as Album", self._load_metadata_setting("playlist_album_override", False)),
-            ("force_playlist_redownload", "🔄 Force Re-download All", self._load_metadata_setting("force_playlist_redownload", False)),
-            ("create_m3u", "📄 Create M3U", self._load_metadata_setting("create_m3u", False)),
-            ("m3u_to_parent", "📁 Place M3U in parent folder", self._load_metadata_setting("m3u_to_parent", False)),
-        ]
-        
-        # Add performance note
+        # Left column
+        left_column = ctk.CTkFrame(categories_container, fg_color="transparent")
+        left_column.pack(side="left", fill="both", expand=True, padx=(0, 15))
+
+        # Right column
+        right_column = ctk.CTkFrame(categories_container, fg_color="transparent")
+        right_column.pack(side="left", fill="both", expand=True, padx=(15, 0))
+
+        # Category 1: Metadata Embedding (Left Column)
+        self._create_settings_category(
+            left_column, "📝 Metadata Embedding",
+            [
+                ("embed_metadata", "Embed Metadata", self._load_metadata_setting("embed_metadata", True and not ffmpeg_disabled)),
+                ("embed_thumbnail", "Embed Thumbnail", self._load_metadata_setting("embed_thumbnail", True and not ffmpeg_disabled)),
+                ("embed_chapters", "Embed Chapters", self._load_metadata_setting("embed_chapters", True and not ffmpeg_disabled)),
+            ],
+            ffmpeg_disabled, ["embed_metadata", "embed_thumbnail", "embed_chapters"]
+        )
+
+        # Category 2: File Options (Left Column)
+        self._create_settings_category(
+            left_column, "💾 File Options",
+            [
+                ("write_thumbnail", "Save Thumbnail", self._load_metadata_setting("write_thumbnail", True)),
+                ("include_author", "Include Author", self._load_metadata_setting("include_author", False)),
+                ("write_description", "Save Description", self._load_metadata_setting("write_description", False)),
+                ("write_info_json", "Save Info JSON", self._load_metadata_setting("write_info_json", False)),
+            ]
+        )
+
+        # Category 3: Playlist Options (Right Column)
+        self._create_settings_category(
+            right_column, "📀 Playlist Options",
+            [
+                ("playlist_album_override", "Use Playlist as Album", self._load_metadata_setting("playlist_album_override", False)),
+                ("create_m3u", "Create M3U", self._load_metadata_setting("create_m3u", False)),
+                ("m3u_to_parent", "Place M3U in parent folder", self._load_metadata_setting("m3u_to_parent", False)),
+            ]
+        )
+
+        # Category 4: Download Options (Right Column)
+        self._create_settings_category(
+            right_column, "📥 Download Options",
+            [
+                ("embed_subs", "Download Subtitles", self._load_metadata_setting("embed_subs", False)),
+                ("force_playlist_redownload", "Force Re-download All", self._load_metadata_setting("force_playlist_redownload", False)),
+            ]
+        )
+
+        # Performance note with modern styling
+        perf_frame = ctk.CTkFrame(metadata_card, fg_color="transparent")
+        perf_frame.pack(fill="x", padx=25, pady=(15, 15))
+
         perf_note = ctk.CTkLabel(
-            metadata_frame,
+            perf_frame,
             text="🚀 Optimized for maximum speed using all available CPU cores",
-            font=ctk.CTkFont(size=10),
-            text_color=("gray50", "gray50")
-        )
-        perf_note.pack(anchor="w", padx=15, pady=(0, 5))
-        
-        # Create checkboxes for each column
-        for column, options in [(left_column, col1_options), (middle_column, col2_options), (right_column, col3_options)]:
-            for key, text, default in options:
-                var = ctk.BooleanVar(value=default)
-                self.metadata_vars[key] = var
-                checkbox = ctk.CTkCheckBox(
-                    column,
-                    text=text,
-                    variable=var,
-                    font=ctk.CTkFont(size=11),
-                    state="disabled" if ffmpeg_disabled and key in ["embed_metadata", "embed_thumbnail", "embed_chapters"] else "normal",
-                    command=lambda k=key, v=var: self._save_metadata_setting(k, v.get())
-                )
-                checkbox.pack(anchor="w", pady=1)
-
-        # Add button for updating existing files
-        update_existing_btn = ctk.CTkButton(
-            metadata_frame,
-            text="🔄 Update Existing Files Album",
-            font=ctk.CTkFont(size=11),
-            height=32,
-            command=self.update_existing_files_album
-        )
-        update_existing_btn.pack(anchor="w", padx=15, pady=(10, 15))
-
-        # Info text about the update existing files feature
-        update_info = ctk.CTkLabel(
-            metadata_frame,
-            text="💡 Use this to update album metadata on already downloaded playlist files",
-            font=ctk.CTkFont(size=10),
-            text_color=("gray50", "gray50"),
+            font=ctk.CTkFont(size=11, family="Segoe UI"),
+            text_color=(current_colors['text_secondary'], current_colors['text_secondary']),
             justify="left"
         )
-        update_info.pack(anchor="w", padx=15, pady=(0, 15))
+        perf_note.pack(anchor="w")
+
+        # Add button for updating existing files with modern styling
+        update_existing_btn = ctk.CTkButton(
+            perf_frame,
+            text="🔄 Update Existing Files Album",
+            font=ctk.CTkFont(size=12, family="Segoe UI"),
+            height=36,
+            command=self.update_existing_files_album,
+            fg_color=(current_colors['accent'], current_colors['accent']),
+            hover_color=(current_colors['warning'], current_colors['warning']),
+            text_color=(current_colors['text_primary'], current_colors['text_primary']),
+            corner_radius=8
+        )
+        update_existing_btn.pack(anchor="w", pady=(10, 0))
+
+        # Info text about the update existing files feature with modern styling
+        update_info = ctk.CTkLabel(
+            metadata_card,
+            text="💡 Use this to update album metadata on already downloaded playlist files",
+            font=ctk.CTkFont(size=11, family="Segoe UI"),
+            text_color=(current_colors['text_secondary'], current_colors['text_secondary']),
+            justify="left"
+        )
+        update_info.pack(anchor="w", padx=25, pady=(5, 20))
 
     def update_existing_files_album(self):
         """Update album metadata for existing playlist files"""
@@ -1017,51 +1517,81 @@ class ModernUI:
         thread = threading.Thread(target=update_worker, daemon=True)
         thread.start()
 
-    def create_cookie_section(self):
-        """Create cookie file section"""
-        cookie_frame = ctk.CTkFrame(self.scrollable_frame)
-        cookie_frame.pack(fill="x", pady=(0, 15))
-
-        # Cookie label
-        cookie_label = ctk.CTkLabel(
-            cookie_frame,
-            text="Cookie File (Optional)",
-            font=ctk.CTkFont(size=14, weight="bold")
+    def create_cookie_section(self, parent):
+        """Create cookie file section with modern card design"""
+        current_colors = self.get_current_colors()
+        # Cookie card container
+        cookie_card = ctk.CTkFrame(
+            parent,
+            fg_color=(current_colors['card'], current_colors['card']),
+            corner_radius=12,
+            border_width=1,
+            border_color=(current_colors['border'], current_colors['border'])
         )
-        cookie_label.pack(anchor="w", padx=15, pady=(15, 10))
+        cookie_card.pack(fill="x", pady=(0, 25))
 
-        # Cookie file input row
-        cookie_row = ctk.CTkFrame(cookie_frame, fg_color="transparent")
-        cookie_row.pack(fill="x", padx=15, pady=(0, 10))
+        # Cookie header
+        cookie_header = ctk.CTkFrame(cookie_card, fg_color="transparent")
+        cookie_header.pack(fill="x", padx=25, pady=(20, 15))
+
+        # Cookie title with icon
+        cookie_title = ctk.CTkLabel(
+            cookie_header,
+            text="🍪 Browser Authentication",
+            font=ctk.CTkFont(size=18, weight="bold", family="Segoe UI"),
+            text_color=(current_colors['text_primary'], current_colors['text_primary'])
+        )
+        cookie_title.pack(anchor="w")
+
+        # Cookie description
+        cookie_desc = ctk.CTkLabel(
+            cookie_header,
+            text="Optional: Use browser cookies for accessing restricted content",
+            font=ctk.CTkFont(size=12, family="Segoe UI"),
+            text_color=(current_colors['text_secondary'], current_colors['text_secondary'])
+        )
+        cookie_desc.pack(anchor="w", pady=(2, 0))
+
+        # Cookie file input row with modern styling
+        cookie_row = ctk.CTkFrame(cookie_card, fg_color="transparent")
+        cookie_row.pack(fill="x", padx=25, pady=(0, 15))
 
         self.cookie_var = ctk.StringVar(value=self.config.get("cookie_file", ""))
         self.cookie_entry = ctk.CTkEntry(
             cookie_row,
             textvariable=self.cookie_var,
             placeholder_text="Path to YouTube cookies.txt file",
-            height=32
+            height=38,
+            font=ctk.CTkFont(size=13, family="Segoe UI"),
+            corner_radius=8,
+            border_width=2,
+            border_color=(current_colors['border'], current_colors['border'])
         )
-        self.cookie_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.cookie_entry.pack(side="left", fill="x", expand=True, padx=(0, 12))
 
         browse_cookie_btn = ctk.CTkButton(
             cookie_row,
             text="Browse",
-            width=80,
-            height=32,
-            command=self.browse_cookie_file
+            width=90,
+            height=38,
+            command=self.browse_cookie_file,
+            font=ctk.CTkFont(size=12, family="Segoe UI"),
+            corner_radius=8,
+            fg_color=(current_colors['primary'], current_colors['primary_hover']),
+            hover_color=(current_colors['primary_hover'], current_colors['primary'])
         )
         browse_cookie_btn.pack(side="left")
 
-        # Cookie info text
+        # Cookie info text with modern styling
         cookie_info = ctk.CTkLabel(
-            cookie_frame,
+            cookie_card,
             text="🎯 Use for age-restricted or region-blocked content.\n"
                  "Export cookies from your browser or use a cookie extractor extension.",
-            font=ctk.CTkFont(size=10),
-            text_color=("gray50", "gray50"),
+            font=ctk.CTkFont(size=11, family="Segoe UI"),
+            text_color=(current_colors['text_secondary'], current_colors['text_secondary']),
             justify="left"
         )
-        cookie_info.pack(anchor="w", padx=15, pady=(0, 15))
+        cookie_info.pack(anchor="w", padx=25, pady=(0, 20))
 
         # Bind to save on change (with debouncing)
         self.cookie_var.trace_add("write", self._on_cookie_file_changed)
@@ -1282,17 +1812,24 @@ class ModernUI:
             default_output = self.config.get("output_directory", self.config.get_default_output_directory())
         task = TaskItem(self, parent_frame=self.tasks_list_frame, default_output=default_output)
         self.tasks.append(task)
-        # Set URL if provided
+        # Update task colors to match current theme
+        task.update_colors()
+
+        # Attach bindings for persistence BEFORE setting URL
+        self._attach_task_bindings(task)
+
+        # Set URL if provided (this will trigger persistence if not restoring)
         try:
             if url:
                 task.url_var.set(url)
+                # Update video info for new tasks (not during restoration)
+                if not getattr(self, '_restoring_tasks', False) and hasattr(task, 'update_video_info'):
+                    task.update_video_info(url, force=True)
         except Exception:
             pass
         # Re-number task titles
         for idx, t in enumerate(self.tasks, start=1):
             t.update_title(f"Task {idx}")
-        # Attach bindings for persistence
-        self._attach_task_bindings(task)
         # Persist updated tasks unless we're restoring
         if not getattr(self, '_restoring_tasks', False):
             self._schedule_persist_tasks()
@@ -1387,45 +1924,113 @@ class ModernUI:
         """Toggle between dark and light themes"""
         current_mode = ctk.get_appearance_mode()
         new_mode = "Light" if current_mode == "Dark" else "Dark"
-        
-        # Disable button temporarily to prevent double-clicks during theme change
-        self.theme_button.configure(state="disabled")
-        
-        # Update CustomTkinter appearance (this causes the visual refresh)
-        ctk.set_appearance_mode(new_mode)
-        
-        # Save to config
+
+        # Save to config first
         self.config.set("theme", new_mode.lower())
-        
-        # Update theme button text and re-enable after a short delay
-        self.root.after(100, self._finish_theme_toggle)
-    
-    def _finish_theme_toggle(self):
-        """Complete the theme toggle process"""
+
+        # Update CustomTkinter appearance
+        ctk.set_appearance_mode(new_mode)
+
+        # Reapply modern styling for the new theme
+        self._apply_modern_styling()
+
+        # Update theme button text
         self.update_theme_button()
-        self.theme_button.configure(state="normal")
+
+        # Update all existing task items
+        for task in self.tasks:
+            task.update_colors()
+    
 
     def update_theme_button(self):
-        """Update theme button text"""
+        """Update theme button text and styling"""
         current_mode = ctk.get_appearance_mode()
+        current_colors = self.get_current_colors()
+
         # Use better contrast icons that work in both themes
         if current_mode == "Dark":
-            icon_text = "☀"  # Sun for switching to light mode
-            text_color = "yellow"
+            icon_text = "☀️"  # Sun for switching to light mode
+            # Use bright yellow for dark mode
+            text_color = "#fbbf24"
         else:
-            icon_text = "🌙"  # Moon for switching to dark mode  
-            text_color = ("gray20", "gray80")
-        
-        self.theme_button.configure(text=icon_text, text_color=text_color)
+            icon_text = "🌙"  # Moon for switching to dark mode
+            # Use dark color for light mode
+            text_color = current_colors['text_primary']
+
+        self.theme_button.configure(
+            text=icon_text,
+            text_color=text_color,
+            fg_color=(current_colors['surface_light'], current_colors['surface']),
+            border_color=(current_colors['border'], current_colors['border'])
+        )
+
+    def toggle_maximize(self, event=None):
+        """Toggle maximized window state"""
+        try:
+            # Check current state
+            try:
+                current_state = self.root.state()
+                is_zoomed = 'zoomed' in current_state
+            except:
+                try:
+                    is_zoomed = self.root.attributes('-zoomed')
+                except:
+                    # Fallback: check if window is approximately screen size
+                    screen_width = self.root.winfo_screenwidth()
+                    screen_height = self.root.winfo_screenheight()
+                    window_width = self.root.winfo_width()
+                    window_height = self.root.winfo_height()
+                    is_zoomed = (window_width >= screen_width - 50 and window_height >= screen_height - 50)
+
+            if is_zoomed:
+                # Restore to normal window and center it
+                try:
+                    self.root.state('normal')
+                except:
+                    try:
+                        self.root.attributes('-zoomed', False)
+                    except:
+                        # Fallback: set smaller size and center
+                        self.root.geometry("1000x800")
+                self.center_window()
+            else:
+                # Maximize window to fill screen
+                try:
+                    self.root.state('zoomed')
+                except:
+                    try:
+                        self.root.attributes('-zoomed', True)
+                    except:
+                        # Final fallback - set to screen size
+                        screen_width = self.root.winfo_screenwidth()
+                        screen_height = self.root.winfo_screenheight()
+                        self.root.geometry(f"{screen_width}x{screen_height}+0+0")
+        except Exception as e:
+            print(f"Error toggling maximize: {e}")
 
     def center_window(self):
-        """Center the window on screen"""
-        self.root.update_idletasks()
-        width = self.root.winfo_width()
-        height = self.root.winfo_height()
-        x = (self.root.winfo_screenwidth() // 2) - (width // 2)
-        y = (self.root.winfo_screenheight() // 2) - (height // 2)
-        self.root.geometry(f'{width}x{height}+{x}+{y}')
+        """Center the window on screen (only works when in normal windowed mode)"""
+        try:
+            # Check if we're in maximized/zoomed state
+            try:
+                current_state = self.root.state()
+                if 'zoomed' in current_state:
+                    return  # Don't try to center when maximized
+            except:
+                try:
+                    if self.root.attributes('-zoomed'):
+                        return  # Don't try to center when maximized
+                except:
+                    pass
+
+            self.root.update_idletasks()
+            width = self.root.winfo_width()
+            height = self.root.winfo_height()
+            x = (self.root.winfo_screenwidth() // 2) - (width // 2)
+            y = (self.root.winfo_screenheight() // 2) - (height // 2)
+            self.root.geometry(f'{width}x{height}+{x}+{y}')
+        except Exception as e:
+            print(f"Error centering window: {e}")
 
     def setup_signal_handlers(self):
         """Set up signal handlers for graceful exit"""
@@ -1447,10 +2052,11 @@ class ModernUI:
             else:
                 print("\n👋 Exiting gracefully...")
             
-            # Save config before exit
+            # Save config before exit (only if not maximized)
             try:
-                geometry = self.root.geometry()
-                self.config.set("window_size", geometry)
+                if not self.is_maximized():
+                    geometry = self.root.geometry()
+                    self.config.set("window_size", geometry)
             except:
                 pass
             
@@ -1469,15 +2075,20 @@ class ModernUI:
 
     def on_closing(self):
         """Handle window closing"""
-        # Save window size to config
-        geometry = self.root.geometry()
-        self.config.set("window_size", geometry)
+        # Save window size to config (only if not maximized)
+        try:
+            if not self.is_maximized():
+                geometry = self.root.geometry()
+                self.config.set("window_size", geometry)
+        except Exception:
+            pass
+
         # Persist tasks before closing
         try:
             self._persist_tasks_to_config()
         except Exception:
             pass
-        
+
         running = any(t.is_running for t in getattr(self, 'tasks', []))
         if running:
             if messagebox.askokcancel("Quit", "Tasks in progress. Quit and abort all?\n\nIncomplete files will be cleaned up automatically."):
@@ -1495,7 +2106,7 @@ class ModernUI:
         """Start the GUI application"""
         # Update theme button after window is created
         self.update_theme_button()
-        
+
         try:
             self.root.mainloop()
         except KeyboardInterrupt:
@@ -1508,6 +2119,25 @@ class ModernUI:
                 except Exception:
                     pass
             sys.exit(0)
+
+    def is_maximized(self):
+        """Check if the window is in maximized/zoomed state"""
+        try:
+            current_state = self.root.state()
+            return 'zoomed' in current_state
+        except:
+            try:
+                return self.root.attributes('-zoomed')
+            except:
+                # Fallback: check if window is approximately screen size
+                try:
+                    screen_width = self.root.winfo_screenwidth()
+                    screen_height = self.root.winfo_screenheight()
+                    window_width = self.root.winfo_width()
+                    window_height = self.root.winfo_height()
+                    return (window_width >= screen_width - 50 and window_height >= screen_height - 50)
+                except:
+                    return False
     
     def show_ffmpeg_warning(self):
         """Show warning about FFmpeg not being available"""
