@@ -616,15 +616,43 @@ class TaskItem:
                 # Consider success only if yt-dlp returned 0 (no errors)
                 is_success = (result_code == 0) or (is_playlist and result_code in (0, None))
                 self.ui.root.after(0, lambda: self._completed(is_success, "Download completed successfully!" if is_success else "Download failed"))
+            except KeyboardInterrupt as e:
+                # Handle KeyboardInterrupt specifically to avoid tkinter issues
+                msg = str(e) if e is not None else ""
+                downloader = self._get_downloader()
+                is_user_abort = (getattr(downloader, '_user_abort_requested', False) or
+                               getattr(downloader, '_should_abort', False) or
+                               'aborted' in msg.lower())
+                if is_user_abort:
+                    try:
+                        self.ui.root.after(0, lambda: self._completed(False, "Download aborted by user"))
+                    except Exception:
+                        # If tkinter scheduling fails, just log the abort
+                        self.log("🛑 Download aborted by user")
+                else:
+                    try:
+                        self.ui.root.after(0, lambda: self._completed(False, "Download cancelled"))
+                    except Exception:
+                        self.log("🛑 Download cancelled")
             except Exception as e:
                 # Normalize aborts vs errors
                 msg = str(e) if e is not None else ""
-                # Only treat as user abort if an explicit abort was requested
-                if (msg and 'aborted' in msg.lower()) and getattr(self._get_downloader(), '_user_abort_requested', False):
-                    self.ui.root.after(0, lambda: self._completed(False, "Download aborted by user"))
+                downloader = self._get_downloader()
+                # Check for user abort with multiple indicators
+                is_user_abort = ((msg and 'aborted' in msg.lower()) and
+                               (getattr(downloader, '_user_abort_requested', False) or
+                                getattr(downloader, '_should_abort', False)))
+                if is_user_abort:
+                    try:
+                        self.ui.root.after(0, lambda: self._completed(False, "Download aborted by user"))
+                    except Exception:
+                        self.log("🛑 Download aborted by user")
                 else:
                     display = msg if msg else "Unknown error"
-                    self.ui.root.after(0, lambda: self._completed(False, f"Download failed: {display}"))
+                    try:
+                        self.ui.root.after(0, lambda: self._completed(False, f"Download failed: {display}"))
+                    except Exception:
+                        self.log(f"❌ Download failed: {display}")
 
         self.thread = threading.Thread(target=worker, daemon=True)
         self.is_running = True
