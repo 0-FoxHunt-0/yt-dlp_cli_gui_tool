@@ -1,4 +1,5 @@
-import yt_dlp
+import sys
+import warnings
 from typing import Callable, Optional
 import os
 import logging
@@ -16,8 +17,29 @@ from .support.playlist import extract_playlist_count_and_title
 import time
 from .support.pot_provider import POTProviderManager
 
+# Suppress yt-dlp plugin registration errors (harmless - plugins already registered)
+# This happens when multiple Downloader instances are created
+import contextlib
+import io
+
+# Capture stderr to filter out plugin registration errors
+_stderr_capture = io.StringIO()
+with contextlib.redirect_stderr(_stderr_capture):
+    import yt_dlp
+
+# Log any stderr that isn't about plugin registration (those are harmless)
+_stderr_output = _stderr_capture.getvalue()
+if _stderr_output and 'already registered' not in _stderr_output:
+    # Only print non-registration errors
+    for line in _stderr_output.split('\n'):
+        if line.strip() and 'already registered' not in line:
+            print(f"yt-dlp import warning: {line}", file=sys.stderr)
+
 
 class Downloader:
+    # Class-level flag to track if logging has been initialized
+    _logging_initialized = False
+    
     def __init__(self):
         # Create logs directory if it doesn't exist
         self.logs_dir = os.path.join(os.path.dirname(
@@ -40,13 +62,17 @@ class Downloader:
                 # Use print instead of logging since logging isn't set up yet
                 print(f"Log cleanup: {cleanup_result['message']}")
 
-        # Download control
+        # Download control - thread-safe flags
+        import threading
+        self._abort_lock = threading.Lock()
         self._should_abort = False
         self._current_ydl = None
         # Tracks whether the user explicitly requested an abort
         self._user_abort_requested = False
 
-        # Track active downloads for cleanup
+        # Track active downloads for cleanup (thread-safe set)
+        import threading
+        self._active_files_lock = threading.Lock()
         self._active_download_files = set()
         self._output_directory = None
 
@@ -63,15 +89,75 @@ class Downloader:
         self._backup_archive_path = None
         self._original_archive_path = None
 
-        # Configure logging
-        log_file = os.path.join(
-            self.logs_dir, f'yt-dlp_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
-        logging.basicConfig(
-            filename=log_file,
-            level=logging.DEBUG,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            encoding='utf-8'  # Ensure log file uses UTF-8 encoding
-        )
+        # Configure logging (INFO level to reduce excessive debug spam from yt-dlp)
+        # Only initialize logging once (for first Downloader instance)
+        if not Downloader._logging_initialized:
+            # Store log file path for reference
+            self.log_file = os.path.join(
+                self.logs_dir, f'yt-dlp_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
+            
+            # Clear any existing handlers to avoid duplicate logs
+            root_logger = logging.getLogger()
+            root_logger.handlers.clear()
+            
+            # Configure root logger with file handler
+            file_handler = logging.FileHandler(self.log_file, encoding='utf-8')
+            file_handler.setLevel(logging.INFO)
+            file_handler.setFormatter(
+                logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            )
+            root_logger.addHandler(file_handler)
+            root_logger.setLevel(logging.INFO)
+            
+            # Suppress excessive yt-dlp warnings about POT tokens
+            yt_dlp_logger = logging.getLogger('yt-dlp')
+            yt_dlp_logger.setLevel(logging.ERROR)  # Only log errors, not warnings
+            # Ensure yt-dlp logger inherits from root (writes to file)
+            yt_dlp_logger.propagate = True
+            
+            # Add custom filter to suppress harmless plugin registration errors
+            class PluginRegistrationFilter(logging.Filter):
+                """Filter out harmless POT provider plugin registration errors"""
+                def filter(self, record):
+                    message = record.getMessage()
+                    # Suppress "already registered" assertion errors (harmless)
+                    if 'already registered' in message:
+                        return False
+                    # Suppress specific import errors from outdated plugins
+                    if 'ImportError: cannot import name' in message and 'BgUtilPTPBase' in message:
+                        return False
+                    # Suppress plugin import error tracebacks
+                    if "Error while importing module 'yt_dlp_plugins" in message:
+                        return False
+                    return True
+            
+            # Apply filter to yt-dlp logger
+            yt_dlp_logger.addFilter(PluginRegistrationFilter())
+            
+            # Also apply to root logger to catch stderr redirects
+            root_logger.addFilter(PluginRegistrationFilter())
+            
+            # Log the log file location for debugging
+            logging.info(f"Logging initialized - writing to: {self.log_file}")
+            
+            # Mark logging as initialized
+            Downloader._logging_initialized = True
+        else:
+            # Use existing log file for subsequent instances
+            try:
+                # Find the most recent log file
+                log_files = sorted(
+                    [f for f in os.listdir(self.logs_dir) if f.startswith('yt-dlp_')],
+                    reverse=True
+                )
+                if log_files:
+                    self.log_file = os.path.join(self.logs_dir, log_files[0])
+                else:
+                    self.log_file = os.path.join(
+                        self.logs_dir, f'yt-dlp_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
+            except Exception:
+                self.log_file = os.path.join(
+                    self.logs_dir, f'yt-dlp_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
 
         # Log the cleanup result now that logging is configured
         if cleanup_result:
@@ -128,8 +214,10 @@ class Downloader:
             'progress_hooks': [],
             'outtmpl': '%(title)s.%(ext)s',
             'logger': logging.getLogger('yt-dlp'),
-            'quiet': True,
-            'no_warnings': True,
+            'quiet': False,  # Don't suppress progress - needed for progress hooks
+            'no_warnings': True,  # Still suppress warnings to reduce log spam
+            'restrictfilenames': True,  # Sanitize filenames to avoid Windows invalid character errors
+            'windowsfilenames': True,  # Extra protection for Windows-specific filename issues
             'clean_infojson': True,
             # Encoding and compatibility options
             'encoding': 'utf-8',  # Force UTF-8 encoding for yt-dlp output
@@ -221,19 +309,71 @@ class Downloader:
                  progress_callback: Optional[Callable] = None,
                  cookie_file: str = None,
                  force_playlist_redownload: bool = False):
+        """
+        Download video/audio from URL with comprehensive validation and sanitization.
+        
+        Args:
+            url: Video/playlist URL (will be sanitized)
+            output_path: Directory for downloads (will be validated and sanitized)
+            is_audio: Whether to download audio only
+            is_playlist: Whether this is a playlist download
+            metadata_options: Dict of metadata embedding options
+            progress_callback: Callback for progress updates
+            cookie_file: Path to cookies file (will be validated)
+            force_playlist_redownload: Force re-download of existing items
+        """
+        
+        # Sanitize and validate URL - remove control characters
+        if not url:
+            raise ValueError("URL cannot be empty")
+        url = url.strip()
+        url = url.replace('\n', '').replace('\r', '').replace('\0', '').replace('\t', '')
+        if not url.startswith(('http://', 'https://')):
+            raise ValueError("URL must start with http:// or https://")
+        
+        # Sanitize and validate output path - remove control characters and normalize
+        if not output_path:
+            raise ValueError("Output path cannot be empty")
+        output_path = output_path.strip()
+        output_path = ' '.join(output_path.split())  # Remove newlines and tabs
+        try:
+            output_path = os.path.normpath(output_path)
+            output_path = os.path.abspath(output_path)
+        except Exception as e:
+            raise ValueError(f"Invalid output path: {e}")
+        
+        # Ensure output directory exists (thread-safe)
+        try:
+            os.makedirs(output_path, exist_ok=True)
+        except Exception as e:
+            raise ValueError(f"Cannot create output directory: {e}")
 
-        # Reset abort flags for a fresh download attempt
-        self._user_abort_requested = False
-        self._should_abort = False
+        # Reset abort flags for a fresh download attempt (thread-safe)
+        with self._abort_lock:
+            self._user_abort_requested = False
+            self._should_abort = False
 
         options = self.base_options.copy()
 
-        # Use cookie file if provided
-        if cookie_file and os.path.exists(cookie_file):
-            options['cookiefile'] = cookie_file
-            logging.info(f"Using cookie file: {cookie_file}")
-        elif cookie_file:
-            logging.warning(f"Cookie file not found: {cookie_file}")
+        # Use cookie file if provided - sanitize and validate
+        if cookie_file:
+            # Sanitize cookie file path to remove control characters
+            cookie_file = cookie_file.strip()
+            cookie_file = ' '.join(cookie_file.split())  # Remove newlines and tabs
+            cookie_file = os.path.normpath(cookie_file)  # Normalize path
+            
+            # Validate cookie file exists and is readable
+            if os.path.exists(cookie_file) and os.path.isfile(cookie_file):
+                try:
+                    # Verify file is readable
+                    with open(cookie_file, 'r', encoding='utf-8') as f:
+                        f.read(1)  # Read one byte to check readability
+                    options['cookiefile'] = cookie_file
+                    logging.info(f"Using cookie file: {cookie_file}")
+                except Exception as e:
+                    logging.warning(f"Cookie file exists but not readable: {cookie_file} - {e}")
+            else:
+                logging.warning(f"Cookie file not found or not a file: {cookie_file}")
 
         # Default metadata options
         if metadata_options is None:
@@ -526,10 +666,15 @@ class Downloader:
 
         # For playlists, we want to be more aggressive about continuing downloads
         if is_playlist:
-            # Ensure downloads are not skipped - override quiet mode for debugging
-            options['quiet'] = False
-            options['no_warnings'] = False
-            logging.info("Playlist mode: Enabled verbose output to debug download issues")
+            # Don't use quiet mode if we have a progress callback - progress hooks need verbose output
+            if progress_callback:
+                options['quiet'] = False
+                options['no_warnings'] = False
+                logging.info("Playlist mode: Enabled progress reporting for UI updates")
+            else:
+                options['quiet'] = True
+                options['no_warnings'] = True
+                logging.info("Playlist mode: Processing playlist items with reduced logging")
 
             # Handle forced re-download option
             if force_playlist_redownload:
@@ -963,10 +1108,12 @@ class Downloader:
 
     def _progress_hook(self, callback: Callable):
         def hook(d):
-            # Log all progress hook calls for debugging
+            # Log significant progress events (not every single update to avoid spam)
             status = d.get('status', 'unknown')
-            if self._is_playlist_download:
-                logging.debug(f"Progress hook called: status={status}, filename={d.get('filename', 'N/A')}")
+            # Only log status changes, not every downloading update
+            if status in ['downloading', 'finished', 'error'] and not hasattr(hook, '_last_logged_status'):
+                logging.info(f"Progress hook active: status={status}")
+                hook._last_logged_status = status
 
             # Check if download should be aborted - do this FIRST and MORE FREQUENTLY
             if self._should_abort:
@@ -974,9 +1121,10 @@ class Downloader:
                 # Use KeyboardInterrupt which yt-dlp respects and will stop the entire process
                 raise KeyboardInterrupt("Download aborted by user")
 
-            # Track active download files
+            # Track active download files (thread-safe)
             if d['status'] == 'downloading' and 'filename' in d:
-                self._active_download_files.add(d['filename'])
+                with self._active_files_lock:
+                    self._active_download_files.add(d['filename'])
 
                 # Log download start for debugging
                 if self._is_playlist_download and 'info_dict' in d:
@@ -1046,14 +1194,18 @@ class Downloader:
 
             # Pass the original yt-dlp data to the callback
             # This allows the UI to handle formatting and reduces data transformation issues
-            callback(d)
+            try:
+                callback(d)
+            except Exception as e:
+                logging.error(f"Progress callback error: {e}")
 
         return hook
 
     def abort_download(self):
-        """Abort the current download"""
-        self._user_abort_requested = True
-        self._should_abort = True
+        """Abort the current download - thread-safe"""
+        with self._abort_lock:
+            self._user_abort_requested = True
+            self._should_abort = True
         logging.info("Download abort requested by user")
 
         if self._current_ydl:
@@ -1592,10 +1744,20 @@ class Downloader:
                         result.stderr = str(result.stderr)
 
                     if result.returncode == 0:
-                        # Replace original file with updated one
-                        os.replace(temp_file, file_path)
-                        updated_count += 1
-                        logging.info(f"Updated album metadata for: {os.path.basename(file_path)}")
+                        # Verify temp file exists before trying to replace
+                        if os.path.exists(temp_file):
+                            # Replace original file with updated one
+                            try:
+                                os.replace(temp_file, file_path)
+                                updated_count += 1
+                                logging.info(f"Updated album metadata for: {os.path.basename(file_path)}")
+                            except Exception as replace_error:
+                                logging.warning(f"Failed to replace file {os.path.basename(file_path)}: {replace_error}")
+                                # Clean up temp file
+                                if os.path.exists(temp_file):
+                                    os.remove(temp_file)
+                        else:
+                            logging.warning(f"FFmpeg reported success but temp file not found for: {os.path.basename(file_path)}")
                     else:
                         logging.warning(f"Failed to update metadata for {os.path.basename(file_path)}: {result.stderr}")
                         # Clean up temp file if it exists
@@ -1604,12 +1766,18 @@ class Downloader:
 
                 except subprocess.TimeoutExpired:
                     logging.warning(f"Timeout updating metadata for {os.path.basename(file_path)}")
-                    if os.path.exists(temp_file):
-                        os.remove(temp_file)
+                    try:
+                        if os.path.exists(temp_file):
+                            os.remove(temp_file)
+                    except Exception:
+                        pass
                 except Exception as e:
                     logging.warning(f"Error updating metadata for {os.path.basename(file_path)}: {e}")
-                    if os.path.exists(temp_file):
-                        os.remove(temp_file)
+                    try:
+                        if os.path.exists(temp_file):
+                            os.remove(temp_file)
+                    except Exception:
+                        pass
 
         if total_files > 0:
             logging.info(f"Album metadata update completed: {updated_count}/{total_files} files updated")

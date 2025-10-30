@@ -300,10 +300,12 @@ class TaskItem:
         self.is_playlist = False
         self._last_analyzed_url = ""
 
-        # Internal tracking for throttled logging
+        # Internal tracking for throttled logging and UI updates
         self._last_logged_progress = 0
         self._last_logged_filename = ""
         self._logged_item_filenames = set()
+        self._last_ui_update_time = 0  # For throttling UI updates to prevent freezes
+        self._last_progress_value = 0  # Track last progress bar value
 
     def _get_downloader(self):
         """Get or create downloader instance lazily"""
@@ -410,19 +412,24 @@ class TaskItem:
 
     def update_status_indicator(self, status: str):
         """Update the status indicator color based on task state"""
-        color_map = {
-            'idle': (self.colors['text_secondary'], self.colors['text_secondary']),
-            'running': (self.colors['secondary'], self.colors['secondary']),
-            'completed': (self.colors['success'], self.colors['success']),
-            'error': (self.colors['danger'], self.colors['danger']),
-            'aborted': (self.colors['warning'], self.colors['warning'])
-        }
-
-        color = color_map.get(status, color_map['idle'])
-        self.status_indicator.configure(text_color=color)
+        # Status indicator widget not yet implemented - method is a placeholder
+        # color_map = {
+        #     'idle': (self.colors['text_secondary'], self.colors['text_secondary']),
+        #     'running': (self.colors['secondary'], self.colors['secondary']),
+        #     'completed': (self.colors['success'], self.colors['success']),
+        #     'error': (self.colors['danger'], self.colors['danger']),
+        #     'aborted': (self.colors['warning'], self.colors['warning'])
+        # }
+        # color = color_map.get(status, color_map['idle'])
+        # self.status_indicator.configure(text_color=color)
+        pass
 
     def get_url(self) -> str:
-        return self.url_var.get().strip()
+        """Get URL with sanitization to remove control characters"""
+        url = self.url_var.get().strip()
+        # Remove newlines, carriage returns, null bytes, and tabs
+        url = url.replace('\n', '').replace('\r', '').replace('\0', '').replace('\t', '')
+        return url
 
     def _browse_output(self):
         directory = filedialog.askdirectory(initialdir=self.output_var.get())
@@ -469,17 +476,41 @@ class TaskItem:
     def start(self):
         if self.is_running:
             return
+        
+        # Get and sanitize URL - remove newlines, tabs, and extra whitespace
         url = self.get_url()
+        url = ' '.join(url.split())  # Remove all newlines, tabs, and normalize whitespace
+        
+        # Validate URL format
         if not url or not url.startswith(("http://", "https://")):
             messagebox.showerror("Error", "Please enter a valid URL starting with http:// or https://")
             return
+        
+        # Additional URL validation to prevent injection
+        if any(char in url for char in ['\n', '\r', '\0']):
+            messagebox.showerror("Error", "URL contains invalid characters")
+            return
+        
+        # Get and sanitize output directory - remove newlines and normalize path
         output_dir = self.output_var.get().strip()
+        output_dir = ' '.join(output_dir.split())  # Remove newlines and tabs
+        
+        # Validate output directory
         if not output_dir:
             messagebox.showerror("Error", "Please choose an output directory")
             return
+        
+        # Sanitize path separators and remove invalid characters
+        try:
+            output_dir = os.path.normpath(output_dir)
+        except Exception as e:
+            messagebox.showerror("Error", f"Invalid output directory path: {e}")
+            return
+        
+        # Create directory if it doesn't exist (thread-safe with exist_ok)
         if not os.path.exists(output_dir):
             try:
-                os.makedirs(output_dir)
+                os.makedirs(output_dir, exist_ok=True)
             except Exception as e:
                 messagebox.showerror("Error", f"Cannot create output directory: {e}")
                 return
@@ -506,6 +537,8 @@ class TaskItem:
         self.progress_bar.set(0)
         self._last_logged_progress = 0
         self._last_logged_filename = ""
+        self._last_ui_update_time = 0
+        self._last_progress_value = 0
         self._aborted = False
         # Context log for clarity across multiple tasks
         try:
@@ -559,10 +592,16 @@ class TaskItem:
                     except Exception:
                         pass
 
-                # Get cookie file from UI config
+                # Get cookie file from UI config and sanitize
                 cookie_file = self.ui.config.get("cookie_file", "")
                 if cookie_file:
                     cookie_file = cookie_file.strip()
+                    # Remove newlines and normalize path
+                    cookie_file = ' '.join(cookie_file.split())
+                    # Verify the file exists and is readable
+                    if cookie_file and not os.path.isfile(cookie_file):
+                        self.log(f"⚠️ Warning: Cookie file not found: {cookie_file}")
+                        cookie_file = None
 
                 result_code = self._get_downloader().download(
                     url=url,
@@ -715,9 +754,23 @@ class TaskItem:
                 else:
                     status_text = f"Downloading: {filename}"
 
-                # Apply UI updates on main thread
-                self._run_on_ui(lambda: self.progress_bar.set(progress))
-                self._set_progress_text_safe(status_text)
+                # Throttle UI updates to prevent freezes (update at most 4 times per second)
+                import time
+                current_time = time.time()
+                time_since_last_update = current_time - self._last_ui_update_time
+                progress_change = abs(progress - self._last_progress_value)
+                
+                # Update UI only if: 250ms passed OR progress changed by >2% OR different file
+                should_update_ui = (time_since_last_update > 0.25 or 
+                                   progress_change > 0.02 or 
+                                   filename != self._last_logged_filename)
+                
+                if should_update_ui:
+                    # Apply UI updates on main thread
+                    self._run_on_ui(lambda p=progress: self.progress_bar.set(p))
+                    self._set_progress_text_safe(status_text)
+                    self._last_ui_update_time = current_time
+                    self._last_progress_value = progress
 
                 # Per-item start log (once per file)
                 try:
@@ -872,13 +925,23 @@ class TaskItem:
 
     # ===== M3U helpers =====
     def _sanitize_name(self, name: str) -> str:
+        """Sanitize filename to be safe for all filesystems"""
         try:
             if not name:
                 return ""
             import re
-            return re.sub(r'[<>:"/\\|?*]', '_', name)
+            # Remove/replace all unsafe characters including newlines, carriage returns
+            name = name.replace('\n', ' ').replace('\r', ' ').replace('\0', '')
+            # Replace Windows/Unix forbidden characters
+            name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name)
+            # Remove leading/trailing dots and spaces (Windows issue)
+            name = name.strip('. ')
+            # Truncate to reasonable length (255 bytes for most filesystems)
+            if len(name.encode('utf-8')) > 200:
+                name = name[:200]
+            return name if name else "untitled"
         except Exception:
-            return name or ""
+            return "untitled"
 
     def _maybe_update_m3u(self, d: dict):
         # Check toggle
